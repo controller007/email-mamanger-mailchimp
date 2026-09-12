@@ -63,10 +63,12 @@ import {
   applyMapping,
   chunkArray,
   isBadValidationResult,
+  splitContactsByExcludedDomains,
   ColumnMappingEditor,
   ContactsPreviewTable,
   InvalidRowsPanel,
   SplitBadge,
+  ExcludeDomainsControl,
   type ValidationResult,
 } from "./csv-import";
 
@@ -482,7 +484,10 @@ function CsvImportDialog({
   const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
   const [csvRawRows, setCsvRawRows] = useState<string[][]>([]);
   const [columnMapping, setColumnMapping] = useState<ColumnMapping[]>([]);
-  const [csvContacts, setCsvContacts] = useState<ParsedContact[]>([]);
+  const [csvContactsRaw, setCsvContactsRaw] = useState<ParsedContact[]>([]);
+  const [excludedDomains, setExcludedDomains] = useState<string[]>([]);
+  const { kept: csvContacts, excluded: excludedCsvContacts } =
+    splitContactsByExcludedDomains(csvContactsRaw, excludedDomains);
   const [csvInvalidRows, setCsvInvalidRows] = useState<InvalidRow[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
@@ -509,7 +514,7 @@ function CsvImportDialog({
         csvRawRows,
         columnMapping,
       );
-      setCsvContacts(contacts);
+      setCsvContactsRaw(contacts);
       setCsvInvalidRows(invalidRows);
       setValidationResults([]);
     }
@@ -536,7 +541,7 @@ function CsvImportDialog({
       const mapping = detectColumnMapping(headers, rows);
       setColumnMapping(mapping);
       const { contacts, invalidRows } = applyMapping(headers, rows, mapping);
-      setCsvContacts(contacts);
+      setCsvContactsRaw(contacts);
       setCsvInvalidRows(invalidRows);
     };
     reader.readAsText(file);
@@ -597,7 +602,7 @@ function CsvImportDialog({
         const bad = results.filter(isBadValidationResult);
         if (bad.length > 0) {
           const badSet = new Set(bad.map((r) => r.email));
-          setCsvContacts((prev) => prev.filter((c) => !badSet.has(c.email)));
+          setCsvContactsRaw((prev) => prev.filter((c) => !badSet.has(c.email)));
           setCsvInvalidRows((prev) => {
             const existing = new Set(prev.map((r) => r.email));
             return [
@@ -627,7 +632,7 @@ function CsvImportDialog({
       setCsvInvalidRows((prev) =>
         prev.filter((r) => r.email !== originalEmail),
       );
-      setCsvContacts((prev) => {
+      setCsvContactsRaw((prev) => {
         const already = prev.find((c) => c.email === updated.email);
         if (already) return prev;
         return [
@@ -721,7 +726,8 @@ function CsvImportDialog({
     setCsvHeaders([]);
     setCsvRawRows([]);
     setColumnMapping([]);
-    setCsvContacts([]);
+    setCsvContactsRaw([]);
+    setExcludedDomains([]);
     setCsvInvalidRows([]);
     setValidationResults([]);
     setValidateTotal(0);
@@ -859,7 +865,7 @@ function CsvImportDialog({
                         setCsvHeaders([]);
                         setCsvRawRows([]);
                         setColumnMapping([]);
-                        setCsvContacts([]);
+                        setCsvContactsRaw([]);
                         setCsvInvalidRows([]);
                         setValidationResults([]);
                       }}
@@ -892,6 +898,15 @@ function CsvImportDialog({
                 <ColumnMappingEditor
                   columnMapping={columnMapping}
                   onUpdate={updateMapping}
+                />
+              )}
+
+              {/* Domain exclusion filter */}
+              {csvContactsRaw.length > 0 && (
+                <ExcludeDomainsControl
+                  excludedDomains={excludedDomains}
+                  onChange={setExcludedDomains}
+                  excludedCount={excludedCsvContacts.length}
                 />
               )}
 

@@ -69,12 +69,14 @@ import {
   chunkArray,
   isValidEmail,
   isBadValidationResult,
+  splitContactsByExcludedDomains,
   // UI
   ColumnMappingEditor,
   ContactsPreviewTable,
   InvalidRowsPanel,
   SplitBadge,
   ValidationBadge,
+  ExcludeDomainsControl,
 } from "./csv-import";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -239,10 +241,15 @@ export function CreateContactListDialog({
   const [csvValidateTotal, setCsvValidateTotal] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const activeContacts: ParsedContact[] =
+  // ── Domain exclusion filter (applies to both paste + CSV) ────────────────────
+  const [excludedDomains, setExcludedDomains] = useState<string[]>([]);
+
+  const rawActiveContacts: ParsedContact[] =
     activeTab === "paste"
       ? validEmails.map((email) => ({ email }))
       : csvContacts;
+  const { kept: activeContacts, excluded: excludedContacts } =
+    splitContactsByExcludedDomains(rawActiveContacts, excludedDomains);
   const contactCount = activeContacts.length;
   const needsSplitting = contactCount > MAX_CONTACTS;
   const batchCount = needsSplitting
@@ -593,6 +600,7 @@ export function CreateContactListDialog({
     setCsvValidateTotal(0);
     setActiveTab("paste");
     setBatchProgress(null);
+    setExcludedDomains([]);
   };
 
   const canSubmit =
@@ -738,6 +746,13 @@ export function CreateContactListDialog({
                 </AlertDescription>
               </Alert>
             )} */}
+
+            {/* Domain exclusion filter — applies to both paste + CSV */}
+            <ExcludeDomainsControl
+              excludedDomains={excludedDomains}
+              onChange={setExcludedDomains}
+              excludedCount={excludedContacts.length}
+            />
 
             {/* Tabs */}
             <Tabs
