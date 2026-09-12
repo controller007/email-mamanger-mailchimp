@@ -53,7 +53,12 @@ export function DnsRecordsDisplay({
           <ol className="mt-2 space-y-1 text-sm">
             <li>1. Log in to your Hostinger account</li>
             <li>2. Go to DNS/Name Servers management</li>
-            <li>3. Add each record below exactly as shown</li>
+            <li>
+              3. Add the SPF and DMARC records below exactly as shown. For
+              DKIM, open your Mandrill dashboard (link in that row) and copy
+              the exact key shown there for this domain — Mandrill's API
+              doesn't expose that value, so it can't be filled in here.
+            </li>
             <li>4. DNS changes can take up to 48 hours to propagate</li>
             <li>5. Return here to verify your domain</li>
           </ol>
@@ -110,25 +115,37 @@ export function DnsRecordsDisplay({
                   </div>
                 </TableCell>
                 <TableCell className="font-mono text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate max-w-[300px]">
-                      {record.value}
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 w-6 p-0"
-                      onClick={() =>
-                        copyToClipboard(record.value, `value-${index}`)
-                      }
+                  {record.dashboardOnly ? (
+                    <a
+                      href={record.dashboardUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-blue-600 hover:underline not-italic font-sans"
                     >
-                      {copiedField === `value-${index}` ? (
-                        <Check className="h-3 w-3 text-green-600" />
-                      ) : (
-                        <Copy className="h-3 w-3" />
-                      )}
-                    </Button>
-                  </div>
+                      <ExternalLink className="h-3 w-3" />
+                      Get key from Mandrill dashboard
+                    </a>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <span className="truncate max-w-[300px]">
+                        {record.value}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 w-6 p-0"
+                        onClick={() =>
+                          copyToClipboard(record.value, `value-${index}`)
+                        }
+                      >
+                        {copiedField === `value-${index}` ? (
+                          <Check className="h-3 w-3 text-green-600" />
+                        ) : (
+                          <Copy className="h-3 w-3" />
+                        )}
+                      </Button>
+                    </div>
+                  )}
                 </TableCell>
                 <TableCell>
                   {record.priority && (

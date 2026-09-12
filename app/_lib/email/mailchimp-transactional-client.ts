@@ -167,10 +167,20 @@ export async function deleteDomain(domain: string): Promise<void> {
   await mandrillFetch("/senders/delete-domain.json", { domain });
 }
 
+export const MANDRILL_DASHBOARD_SENDING_DOMAINS_URL =
+  "https://mandrillapp.com/settings/sending-domains";
+
 /**
  * Builds the SPF/DKIM TXT records a user must add at their DNS provider,
  * in the same {type, name, value} shape the existing DnsRecordsDisplay
  * component expects (previously fed by Resend's `records` array).
+ *
+ * SPF is a fixed, documented value — safe to show verbatim. DKIM is NOT:
+ * Mandrill generates a unique per-domain public key that its API never
+ * returns (add-domain/check-domain only report validity, not the key
+ * itself) — it's only visible in the Mandrill dashboard. Marking this row
+ * `dashboardOnly` so the UI links out instead of rendering a fake,
+ * copy-pasteable value that would never actually validate.
  */
 export function buildDnsRecords(domain: string) {
   return [
@@ -183,9 +193,10 @@ export function buildDnsRecords(domain: string) {
     {
       type: "TXT",
       name: `mandrill._domainkey.${domain}`,
-      value:
-        "k=rsa; p=<copy the public key shown for this domain in your Mailchimp Transactional dashboard>",
+      value: "",
       record: "DKIM",
+      dashboardOnly: true,
+      dashboardUrl: MANDRILL_DASHBOARD_SENDING_DOMAINS_URL,
     },
   ];
 }
