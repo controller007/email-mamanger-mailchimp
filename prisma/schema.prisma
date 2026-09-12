@@ -1,0 +1,201 @@
+// schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                  String   @id @default(auto()) @map("_id") @db.ObjectId
+  email               String   @unique
+  username            String?  @unique
+  password            String
+  firstName           String?
+  lastName            String?
+  image               String?
+  blocked             Boolean  @default(false)
+  // ── New: global send interval in seconds (0 = no delay) ──────────────────
+  sendIntervalSeconds Int      @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  contactLists   ContactList[]
+  emailHistory   EmailHistory[]
+  suppressions   EmailSuppression[]
+  emailTemplates EmailTemplate[]
+  campaignJobs   CampaignJob[]
+
+  @@map("users")
+}
+
+model ContactList {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  description String?
+  emails      String[] // kept in sync with Contact records for backward compat
+  status      String   @default("ready")
+  domainId    String   @db.ObjectId
+  createdBy   String   @db.ObjectId
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user         User           @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  domain       Domain         @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  emailHistory EmailHistory[]
+  contacts     Contact[]
+
+  @@map("contact_lists")
+}
+
+model Contact {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  email         String
+  firstName     String?
+  lastName      String?
+  company       String?
+  phone         String?
+  tags          String[]
+  customFields  Json?
+  isSubscribed  Boolean  @default(true)
+  isComplained  Boolean  @default(false)
+  isBounced     Boolean  @default(false)
+  contactListId String   @db.ObjectId
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  contactList ContactList @relation(fields: [contactListId], references: [id], onDelete: Cascade)
+
+  @@unique([email, contactListId])
+  @@map("contacts")
+}
+
+model Domain {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  domain            String   @unique
+  status            String   @default("pending") // pending | verified | failed
+  region            String   @default("us-east-1")
+  resendId          String?  @unique
+  userId            String   @db.ObjectId
+  trackingSubdomain String?
+  trackingStatus    String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  senders      Sender[]
+  contactLists ContactList[]
+
+  @@map("domains")
+}
+
+model EmailHistory {
+  id                String                @id @default(auto()) @map("_id") @db.ObjectId
+  subject           String
+  body              String
+  preheader         String?
+  contactListId     String                @db.ObjectId
+  userId            String                @db.ObjectId
+  senderId          String?               @db.ObjectId
+  senderEmail       String?
+  senderName        String?
+  sendMethod        String                @default("batch")
+  status            String                @default("sent") // queued | sending | sent | failed
+  batchIds          String[]
+  sentCount         Int                   @default(0)
+  deliveredCount    Int                   @default(0)
+  openedCount       Int                   @default(0)
+  clickedCount      Int                   @default(0)
+  failedCount       Int                   @default(0)
+  bouncedCount      Int                   @default(0)
+  complainedCount   Int                   @default(0)
+  unsubscribedCount Int                   @default(0)
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  syncedAt          DateTime?
+  contactList       ContactList           @relation(fields: [contactListId], references: [id], onDelete: Cascade)
+  user              User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  recipientEvents   EmailRecipientEvent[]
+
+  @@map("email_history")
+}
+
+model EmailRecipientEvent {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  emailHistoryId  String   @db.ObjectId
+  recipientEmail  String
+  status          String // sent | delivered | opened | clicked | bounced | failed | complained | unsubscribed
+  clickedUrl      String?
+  resendMessageId String?
+  createdAt       DateTime @default(now())
+
+  emailHistory EmailHistory @relation(fields: [emailHistoryId], references: [id], onDelete: Cascade)
+
+  @@unique([emailHistoryId, resendMessageId])
+  @@map("email_recipient_events")
+}
+
+model EmailSuppression {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  email     String   @unique
+  reason    String // bounced | complained | unsubscribed
+  userId    String   @db.ObjectId
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_suppressions")
+}
+
+model Sender {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  email     String   @unique
+  domainId  String   @db.ObjectId
+  userId    String   @db.ObjectId
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  domain Domain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@map("senders")
+}
+
+model EmailTemplate {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  description String?
+  subject     String?
+  body        String
+  designJson  String?
+  category    String   @default("custom")
+  isBuiltIn   Boolean  @default(false)
+  userId      String   @db.ObjectId
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_templates")
+}
+
+model CampaignJob {
+  id              String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String    @db.ObjectId
+  emailHistoryId  String    @db.ObjectId
+  inngestRunId    String?
+  status          String    @default("queued")
+  totalContacts   Int       @default(0)
+  sentCount       Int       @default(0)
+  failedCount     Int       @default(0)
+  intervalSeconds Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  completedAt     DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("campaign_jobs")
+}
