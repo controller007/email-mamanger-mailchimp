@@ -179,12 +179,21 @@ export interface VerifiedDomain {
   verified: boolean;
 }
 
+/**
+ * Mailchimp's own "Add & Verify Domain" dashboard flow asks for an email
+ * address to send the verification code to (not necessarily @domain) —
+ * mirroring that here since the API almost certainly needs the same field,
+ * even though the interactive API reference doesn't expose its exact
+ * request schema to a plain fetch. Confirm this against a live call; the
+ * error message will say which field is wrong if this guess is off.
+ */
 export async function addVerifiedDomain(
   domain: string,
+  email: string,
 ): Promise<VerifiedDomain> {
   return mcFetch("/verified-domains", {
     method: "POST",
-    body: JSON.stringify({ domain }),
+    body: JSON.stringify({ domain, email }),
   });
 }
 

@@ -42,6 +42,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Test sends always go through Mandrill/Transactional directly.
+    if (sender.domain.transactionalStatus !== "verified") {
+      return NextResponse.json(
+        {
+          error: `${sender.domain.domain} isn't verified for Transactional sends yet — test emails go through Mandrill directly.`,
+        },
+        { status: 400 },
+      );
+    }
+
     const html = generateEmailTemplate({
       body: emailBody,
       subject,

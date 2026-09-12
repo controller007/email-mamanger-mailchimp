@@ -59,6 +59,8 @@ interface Domain {
   id: string;
   domain: string;
   status: string;
+  marketingStatus: string;
+  transactionalStatus: string;
   senders: Sender[];
 }
 
@@ -526,6 +528,27 @@ export function EmailComposer({
     0,
   );
 
+  // Marketing and Transactional verify independently per domain (a domain
+  // can be verified for one and not the other) — gate the send-method
+  // choice on whichever domain the selected lists/sender belong to.
+  const activeDomain = selectedLists[0]?.domain;
+  const marketingAvailable = activeDomain?.marketingStatus === "verified";
+  const transactionalAvailable =
+    activeDomain?.transactionalStatus === "verified";
+
+  useEffect(() => {
+    if (!activeDomain) return;
+    if (sendMethod === "marketing" && !marketingAvailable && transactionalAvailable) {
+      setSendMethod("transactional");
+    } else if (
+      sendMethod === "transactional" &&
+      !transactionalAvailable &&
+      marketingAvailable
+    ) {
+      setSendMethod("marketing");
+    }
+  }, [activeDomain, marketingAvailable, transactionalAvailable, sendMethod]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -616,8 +639,15 @@ export function EmailComposer({
     }
   };
 
+  const sendMethodAvailable =
+    sendMethod === "marketing" ? marketingAvailable : transactionalAvailable;
+
   const canSend =
-    subject && body && selectedListIds.length > 0 && selectedSenderId;
+    subject &&
+    body &&
+    selectedListIds.length > 0 &&
+    selectedSenderId &&
+    sendMethodAvailable;
 
   return (
     <>
@@ -699,30 +729,36 @@ export function EmailComposer({
                           value: "transactional" as const,
                           title: "Transactional",
                           desc: "Mailchimp Transactional (Mandrill) — one send per contact",
+                          available: !activeDomain || transactionalAvailable,
                         },
                         {
                           value: "marketing" as const,
                           title: "Marketing",
                           desc: "Mailchimp Marketing campaign — synced audience per list",
+                          available: !activeDomain || marketingAvailable,
                         },
                       ]
                     ).map((opt) => (
                       <button
                         key={opt.value}
                         type="button"
-                        disabled={isLoading}
+                        disabled={isLoading || !opt.available}
                         onClick={() => setSendMethod(opt.value)}
                         className={`text-left p-3 rounded-xl border transition-colors ${
-                          sendMethod === opt.value
-                            ? "border-blue-500 bg-blue-50/60 ring-1 ring-blue-200"
-                            : "border-gray-200 hover:border-gray-300"
+                          !opt.available
+                            ? "border-gray-100 bg-gray-50 opacity-50 cursor-not-allowed"
+                            : sendMethod === opt.value
+                              ? "border-blue-500 bg-blue-50/60 ring-1 ring-blue-200"
+                              : "border-gray-200 hover:border-gray-300"
                         }`}
                       >
                         <p className="text-sm font-semibold text-gray-900">
                           {opt.title}
                         </p>
                         <p className="text-xs text-gray-500 mt-0.5">
-                          {opt.desc}
+                          {opt.available
+                            ? opt.desc
+                            : `${activeDomain?.domain ?? "This domain"} isn't verified for ${opt.title.toLowerCase()} sends yet.`}
                         </p>
                       </button>
                     ))}

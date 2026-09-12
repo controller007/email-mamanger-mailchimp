@@ -50,6 +50,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Marketing and Transactional verify independently per domain — a
+    // domain being "verified" overall doesn't mean it's cleared for both.
+    const requiredStatus =
+      sendMethod === "marketing"
+        ? sender.domain.marketingStatus
+        : sender.domain.transactionalStatus;
+    if (requiredStatus !== "verified") {
+      return NextResponse.json(
+        {
+          error: `${sender.domain.domain} isn't verified for ${sendMethod} sends yet.`,
+        },
+        { status: 400 },
+      );
+    }
+
     // Validate all lists belong to this user
     const contactLists = await prisma.contactList.findMany({
       where: { id: { in: contactListIds }, createdBy: session.user.id },

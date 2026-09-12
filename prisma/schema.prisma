@@ -75,10 +75,17 @@ model Contact {
 }
 
 model Domain {
-  id                String   @id @default(auto()) @map("_id") @db.ObjectId
-  domain            String   @unique
-  status            String   @default("pending") // pending | verified | failed
-  region            String   @default("us-east-1")
+  id     String @id @default(auto()) @map("_id") @db.ObjectId
+  domain String @unique
+  // Combined flag other parts of the app gate on (contact-list creation,
+  // sender creation): "verified" whenever EITHER marketingStatus or
+  // transactionalStatus is "verified". Kept alongside the two granular
+  // fields below so existing single-flag checks don't need to change.
+  status               String  @default("pending") // pending | verified | failed
+  marketingStatus      String  @default("not_configured") // not_configured | pending | verified
+  transactionalStatus  String  @default("not_configured") // not_configured | pending | verified
+  mandrillVerifyTxtKey String? // TXT record value for mandrill_verify.<domain> (Transactional/Mandrill ownership check)
+  region                String   @default("us-east-1")
   mailchimpDomainId String?  @unique // Mailchimp Marketing verified-domain id (from POST /verified-domains)
   userId            String   @db.ObjectId
   trackingSubdomain String?

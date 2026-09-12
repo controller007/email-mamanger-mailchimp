@@ -8,15 +8,42 @@ import {
   verifyVerifiedDomain,
   deleteVerifiedDomain,
 } from "@/app/_lib/email/mailchimp-marketing-client";
+import {
+  addDomain as mandrillAddDomain,
+  checkDomain as mandrillCheckDomain,
+  deleteDomain as mandrillDeleteDomain,
+  isMandrillDomainVerified,
+} from "@/app/_lib/email/mailchimp-transactional-client";
+
+// ── combined status helper ───────────────────────────────────────────────────
+//
+// `status` stays "verified" whenever EITHER marketingStatus or
+// transactionalStatus is "verified" — that's the flag contact-list creation
+// and sender creation already gate on, so they don't need to know about the
+// two-provider split.
+
+async function recomputeCombinedStatus(domainId: string) {
+  const domain = await prisma.domain.findUnique({ where: { id: domainId } });
+  if (!domain) return;
+  const status =
+    domain.marketingStatus === "verified" ||
+    domain.transactionalStatus === "verified"
+      ? "verified"
+      : "pending";
+  if (status !== domain.status) {
+    await prisma.domain.update({ where: { id: domainId }, data: { status } });
+  }
+}
 
 // ── createDomain ──────────────────────────────────────────────────────────────
 //
-// Domain authentication runs entirely through Mailchimp Marketing's
-// /verified-domains API (used as the single source of truth for both send
-// modes). Adding a domain here makes Mailchimp email a verification code to
-// an address on that domain — there's no DNS record step for this method.
+// Registers the domain with Mailchimp Marketing (required — that's the
+// verification code flow this app currently drives) and, best-effort, with
+// Mandrill/Transactional too (so its TXT-record verification is ready
+// whenever that plan gets configured; failures here are non-fatal and just
+// leave transactionalStatus at "not_configured").
 
-export async function createDomain(domainName: string) {
+export async function createDomain(domainName: string, email: string) {
   try {
     const user = await requireAuth();
 
@@ -27,9 +54,16 @@ export async function createDomain(domainName: string) {
       return { success: false, error: "Domain already exists in the system" };
     }
 
+    if (!email?.trim()) {
+      return {
+        success: false,
+        error: "An email address is required to receive the verification code",
+      };
+    }
+
     let mcDomain;
     try {
-      mcDomain = await addVerifiedDomain(domainName);
+      mcDomain = await addVerifiedDomain(domainName, email.trim());
     } catch (error) {
       return {
         success: false,
@@ -40,10 +74,25 @@ export async function createDomain(domainName: string) {
       };
     }
 
+    let mandrillVerifyTxtKey: string | undefined;
+    let transactionalStatus = "not_configured";
+    if (process.env.MAILCHIMP_TRANSACTIONAL_API_KEY) {
+      try {
+        const mandrillCheck = await mandrillAddDomain(domainName);
+        mandrillVerifyTxtKey = mandrillCheck.verify_txt_key;
+        transactionalStatus = "pending";
+      } catch (error) {
+        console.error("Mandrill add-domain (non-fatal) error:", error);
+      }
+    }
+
     const domain = await prisma.domain.create({
       data: {
         domain: domainName,
         status: "pending",
+        marketingStatus: "pending",
+        transactionalStatus,
+        mandrillVerifyTxtKey,
         mailchimpDomainId: String(mcDomain.id),
         userId: user.id,
       },
@@ -57,6 +106,7 @@ export async function createDomain(domainName: string) {
         id: domain.id,
         domain: domain.domain,
         status: domain.status,
+        mandrillVerifyTxtKey,
       },
     };
   } catch (error) {
@@ -65,7 +115,7 @@ export async function createDomain(domainName: string) {
   }
 }
 
-// ── verifyDomain ──────────────────────────────────────────────────────────────
+// ── verifyDomain (Marketing) ─────────────────────────────────────────────────
 //
 // Mailchimp Marketing verifies domain ownership via a one-time code emailed
 // when the domain was added — the user reads that email and submits the code
@@ -97,25 +147,82 @@ export async function verifyDomain(domainId: string, code: string) {
       };
     }
 
-    const status = result.verified ? "verified" : "pending";
+    const marketingStatus = result.verified ? "verified" : "pending";
 
     await prisma.domain.update({
       where: { id: domainId },
-      data: { status },
+      data: { marketingStatus },
     });
+    await recomputeCombinedStatus(domainId);
 
     revalidatePath("/");
 
     return {
-      success: status === "verified",
-      status,
+      success: marketingStatus === "verified",
+      status: marketingStatus,
       message:
-        status === "verified"
-          ? "Domain verified successfully!"
+        marketingStatus === "verified"
+          ? "Domain verified for Marketing sends!"
           : "That code didn't verify the domain. Double-check it and try again.",
     };
   } catch (error) {
     console.error("Verify domain error:", error);
+    return { success: false, error: "Verification failed" };
+  }
+}
+
+// ── verifyTransactionalDomain (Mandrill) ─────────────────────────────────────
+//
+// Re-checks the mandrill_verify.<domain> TXT record (plus SPF/DKIM) via
+// Mandrill's check-domain call and persists whatever it finds.
+
+export async function verifyTransactionalDomain(domainId: string) {
+  try {
+    const user = await requireAuth();
+
+    const domain = await prisma.domain.findFirst({
+      where: { id: domainId, userId: user.id },
+    });
+
+    if (!domain) {
+      return { success: false, error: "Domain not found" };
+    }
+
+    let check;
+    try {
+      check = await mandrillCheckDomain(domain.domain);
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Verification failed",
+      };
+    }
+
+    const transactionalStatus = isMandrillDomainVerified(check)
+      ? "verified"
+      : "pending";
+
+    await prisma.domain.update({
+      where: { id: domainId },
+      data: {
+        transactionalStatus,
+        mandrillVerifyTxtKey: check.verify_txt_key ?? domain.mandrillVerifyTxtKey,
+      },
+    });
+    await recomputeCombinedStatus(domainId);
+
+    revalidatePath("/");
+
+    return {
+      success: transactionalStatus === "verified",
+      status: transactionalStatus,
+      message:
+        transactionalStatus === "verified"
+          ? "Domain verified for Transactional sends!"
+          : "TXT record not detected yet. DNS propagation can take up to 48 hours.",
+    };
+  } catch (error) {
+    console.error("Verify transactional domain error:", error);
     return { success: false, error: "Verification failed" };
   }
 }
@@ -132,10 +239,10 @@ export async function enableTracking(domainId: string) {
   try {
     const user = await requireAuth();
     const domain = await prisma.domain.findFirst({
-      where: { id: domainId, userId: user.id, status: "verified" },
+      where: { id: domainId, userId: user.id, transactionalStatus: "verified" },
     });
     if (!domain) {
-      return { success: false, error: "Domain not found or not verified" };
+      return { success: false, error: "Domain not found or not Transactional-verified" };
     }
     await prisma.domain.update({
       where: { id: domainId },
@@ -161,9 +268,9 @@ export async function getTrackingRecords(domainId: string) {
       success: true,
       trackingRecords: [],
       trackingSubdomainFull: null,
-      trackingStatus: domain.status === "verified" ? "verified" : "pending",
-      openTracking: domain.status === "verified",
-      clickTracking: domain.status === "verified",
+      trackingStatus: domain.transactionalStatus === "verified" ? "verified" : "pending",
+      openTracking: domain.transactionalStatus === "verified",
+      clickTracking: domain.transactionalStatus === "verified",
     };
   } catch (error) {
     console.error("Get tracking records error:", error);
@@ -179,7 +286,7 @@ export async function verifyTracking(domainId: string) {
     });
     if (!domain) return { success: false, error: "Domain not found" };
 
-    const verified = domain.status === "verified";
+    const verified = domain.transactionalStatus === "verified";
     if (verified) {
       await prisma.domain.update({
         where: { id: domainId },
@@ -292,6 +399,13 @@ export async function deleteDomain(domainId: string) {
         await deleteVerifiedDomain(domain.domain);
       } catch (error) {
         console.error("Failed to delete Mailchimp Marketing verified domain:", error);
+      }
+    }
+    if (domain.transactionalStatus !== "not_configured") {
+      try {
+        await mandrillDeleteDomain(domain.domain);
+      } catch (error) {
+        console.error("Failed to delete Mandrill sending domain:", error);
       }
     }
 

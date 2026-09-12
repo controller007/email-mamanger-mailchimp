@@ -51,6 +51,7 @@ import {
   deleteDomain,
   deleteSender,
   verifyDomain,
+  verifyTransactionalDomain,
   enableTracking,
   getTrackingRecords,
   verifyTracking,
@@ -74,6 +75,9 @@ interface Domain {
   id: string;
   domain: string;
   status: string;
+  marketingStatus: string;
+  transactionalStatus: string;
+  mandrillVerifyTxtKey?: string | null;
   trackingSubdomain?: string | null;
   trackingStatus?: string | null;
   createdAt: Date;
@@ -115,6 +119,47 @@ function statusConfig(status: string) {
         dot: "bg-red-500",
       };
   }
+}
+
+/**
+ * Per-channel status pill (Marketing / Transactional) — the two send
+ * surfaces verify independently, so a domain can be verified for one and
+ * not the other. "not_configured" is distinct from "pending": it means the
+ * provider was never even registered (e.g. no Mandrill key set at all).
+ */
+function channelStatusConfig(status: string) {
+  switch (status) {
+    case "verified":
+      return {
+        label: "Verified",
+        cls: "bg-emerald-50 text-emerald-700 border-emerald-200",
+        dot: "bg-emerald-500",
+      };
+    case "pending":
+      return {
+        label: "Pending",
+        cls: "bg-amber-50 text-amber-700 border-amber-200",
+        dot: "bg-amber-500",
+      };
+    default:
+      return {
+        label: "Not set up",
+        cls: "bg-gray-50 text-gray-500 border-gray-200",
+        dot: "bg-gray-300",
+      };
+  }
+}
+
+function ChannelBadge({ label, status }: { label: string; status: string }) {
+  const cfg = channelStatusConfig(status);
+  return (
+    <div
+      className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${cfg.cls}`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
+      {label}: {cfg.label}
+    </div>
+  );
 }
 
 // ── ClickTrackingPanel ────────────────────────────────────────────────────────
@@ -546,14 +591,13 @@ function ClickTrackingPanel({
 
 function DomainCard({ domain }: { domain: Domain }) {
   const [isVerifying, setIsVerifying] = useState(false);
+  const [isVerifyingTransactional, setIsVerifyingTransactional] = useState(false);
   const [showCodeInput, setShowCodeInput] = useState(false);
   const [code, setCode] = useState("");
   const [message, setMessage] = useState("");
   const [messageOk, setMessageOk] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const router = useRouter();
-
-  const cfg = statusConfig(domain.status);
 
   const handleVerify = async () => {
     if (!code.trim()) return;
@@ -572,6 +616,20 @@ function DomainCard({ domain }: { domain: Domain }) {
       router.refresh();
     }
     setIsVerifying(false);
+  };
+
+  const handleVerifyTransactional = async () => {
+    setIsVerifyingTransactional(true);
+    setMessage("");
+    const result = await verifyTransactionalDomain(domain.id);
+    setMessage(
+      result.success
+        ? result.message || "Verified!"
+        : result.error || result.message || "Verification failed",
+    );
+    setMessageOk(!!result.success);
+    if (result.success) router.refresh();
+    setIsVerifyingTransactional(false);
   };
 
   const handleDelete = async () => {
@@ -598,12 +656,11 @@ function DomainCard({ domain }: { domain: Domain }) {
               <h3 className="text-base font-bold text-gray-900">
                 {domain.domain}
               </h3>
-              <div
-                className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full border ${cfg.cls}`}
-              >
-                <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
-                {cfg.label}
-              </div>
+              <ChannelBadge label="Marketing" status={domain.marketingStatus} />
+              <ChannelBadge
+                label="Transactional"
+                status={domain.transactionalStatus}
+              />
             </div>
             <p className="text-xs text-gray-400 mt-0.5">
               Added{" "}
@@ -618,7 +675,7 @@ function DomainCard({ domain }: { domain: Domain }) {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {domain.status !== "verified" && (
+          {domain.marketingStatus !== "verified" && (
             <Button
               variant="outline"
               size="sm"
@@ -626,9 +683,26 @@ function DomainCard({ domain }: { domain: Domain }) {
               className="rounded-xl"
             >
               <Shield className="mr-1.5 h-3.5 w-3.5" />
-              Verify Domain
+              Verify Marketing
             </Button>
           )}
+          {domain.transactionalStatus !== "not_configured" &&
+            domain.transactionalStatus !== "verified" && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleVerifyTransactional}
+                disabled={isVerifyingTransactional}
+                className="rounded-xl"
+              >
+                {isVerifyingTransactional ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Shield className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                Verify Transactional
+              </Button>
+            )}
           {domain.status === "verified" && (
             <AddSenderDialog domainId={domain.id} domainName={domain.domain} />
           )}
@@ -690,9 +764,9 @@ function DomainCard({ domain }: { domain: Domain }) {
         <div className="px-6 pb-4">
           <div className="border border-gray-200 rounded-xl bg-gray-50 p-4 space-y-3">
             <p className="text-sm text-gray-600">
-              Mailchimp emailed a verification code to an address on{" "}
-              <strong>{domain.domain}</strong> when this domain was added.
-              Enter it below to verify.
+              Mailchimp emailed a Marketing verification code for{" "}
+              <strong>{domain.domain}</strong> to the address given when this
+              domain was added. Enter it below to verify Marketing sends.
             </p>
             <div className="flex items-center gap-2">
               <Input
@@ -722,8 +796,32 @@ function DomainCard({ domain }: { domain: Domain }) {
         </div>
       )}
 
-      {/* Tracking panel — verified domains only */}
-      {domain.status === "verified" && (
+      {domain.transactionalStatus === "pending" && domain.mandrillVerifyTxtKey && (
+        <div className="px-6 pb-4">
+          <div className="border border-gray-200 rounded-xl bg-gray-50 p-4 space-y-2">
+            <p className="text-sm text-gray-600">
+              Add this TXT record at your DNS provider to verify{" "}
+              <strong>{domain.domain}</strong> for Transactional sends, then
+              click "Verify Transactional" above.
+            </p>
+            <div className="p-3 bg-white border border-gray-200 rounded-lg space-y-1 font-mono text-xs">
+              <p>
+                <span className="text-gray-400">Name:</span>{" "}
+                mandrill_verify.{domain.domain}
+              </p>
+              <p className="truncate">
+                <span className="text-gray-400">Value:</span>{" "}
+                {domain.mandrillVerifyTxtKey}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tracking panel — Mandrill/Transactional-verified domains only (this
+          is a Mandrill per-message feature; Marketing tracks separately
+          via the email-activity report, no setup needed). */}
+      {domain.transactionalStatus === "verified" && (
         <ClickTrackingPanel
           domainId={domain.id}
           domainName={domain.domain}
