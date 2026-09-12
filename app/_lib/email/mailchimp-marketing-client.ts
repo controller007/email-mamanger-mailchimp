@@ -30,8 +30,15 @@ async function mcFetch<T = any>(
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    const message = (data && (data.detail || data.title)) || `Mailchimp Marketing API error: ${response.status}`;
-    throw new Error(message);
+    // Mailchimp's validation errors put the actually-useful info in
+    // `errors: [{ field, message }]` — data.title alone is just the generic
+    // "The resource submitted could not be validated." Surface both so a
+    // failed call tells you which field is wrong instead of just that one is.
+    const base = (data && (data.detail || data.title)) || `Mailchimp Marketing API error: ${response.status}`;
+    const fieldErrors = Array.isArray(data?.errors)
+      ? data.errors.map((e: any) => `${e.field ?? "?"}: ${e.message ?? JSON.stringify(e)}`).join("; ")
+      : "";
+    throw new Error(fieldErrors ? `${base} (${fieldErrors})` : base);
   }
 
   return data as T;
