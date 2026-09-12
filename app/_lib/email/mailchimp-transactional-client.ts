@@ -119,14 +119,21 @@ export async function getMessageInfo(
 
 export interface MandrillDomainCheck {
   domain: string;
+  created_at?: string;
+  last_tested_at?: string | null;
   spf: { valid: boolean; valid_after?: string | null; error?: string | null };
   dkim: { valid: boolean; valid_after?: string | null; error?: string | null };
   verified_at: string | null;
   valid_signing: boolean;
 }
 
+// Mandrill's real method names are flat (not nested REST paths) —
+// /senders/add-domain, /senders/check-domain, /senders/verify-domain,
+// /senders/domains, /senders/delete-domain. Using the nested
+// /senders/domains/add.json style (an earlier version of this file) fails
+// with a Mandrill "Unknown method" error since that path doesn't exist.
 export async function addDomain(domain: string): Promise<MandrillDomainCheck> {
-  return mandrillFetch<MandrillDomainCheck>("/senders/domains/add.json", {
+  return mandrillFetch<MandrillDomainCheck>("/senders/add-domain.json", {
     domain,
   });
 }
@@ -134,17 +141,30 @@ export async function addDomain(domain: string): Promise<MandrillDomainCheck> {
 export async function checkDomain(
   domain: string,
 ): Promise<MandrillDomainCheck> {
-  return mandrillFetch<MandrillDomainCheck>("/senders/domains/check.json", {
+  return mandrillFetch<MandrillDomainCheck>("/senders/check-domain.json", {
     domain,
   });
 }
 
+/**
+ * Sends a verification email to `<mailbox>@<domain>` (e.g. mailbox="admin")
+ * to confirm ownership of the domain. This is a separate step from
+ * checkDomain's SPF/DKIM check — Mandrill requires it before a domain can
+ * be used to sign outgoing DKIM as fully "verified".
+ */
+export async function verifyDomainOwnership(
+  domain: string,
+  mailbox: string,
+): Promise<{ status: string; domain: string; email: string }> {
+  return mandrillFetch("/senders/verify-domain.json", { domain, mailbox });
+}
+
 export async function listDomains(): Promise<MandrillDomainCheck[]> {
-  return mandrillFetch<MandrillDomainCheck[]>("/senders/domains/list.json");
+  return mandrillFetch<MandrillDomainCheck[]>("/senders/domains.json");
 }
 
 export async function deleteDomain(domain: string): Promise<void> {
-  await mandrillFetch("/senders/domains/delete.json", { domain });
+  await mandrillFetch("/senders/delete-domain.json", { domain });
 }
 
 /**
@@ -185,6 +205,7 @@ export const mailchimpTransactional = {
   getMessageInfo,
   addDomain,
   checkDomain,
+  verifyDomainOwnership,
   listDomains,
   deleteDomain,
   buildDnsRecords,

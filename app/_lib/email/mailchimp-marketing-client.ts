@@ -164,12 +164,83 @@ export async function sendCampaign(campaignId: string): Promise<void> {
   await mcFetch(`/campaigns/${campaignId}/actions/send`, { method: "POST" });
 }
 
-export async function getCampaignReport(campaignId: string): Promise<any> {
+export interface CampaignReportSummary {
+  emails_sent: number;
+  opens: { opens_total: number; unique_opens: number };
+  clicks: { clicks_total: number; unique_clicks: number };
+  bounces: { hard_bounces: number; soft_bounces: number; syntax_errors: number };
+  unsubscribed: number;
+  abuse_reports: number;
+}
+
+export async function getCampaignReport(
+  campaignId: string,
+): Promise<CampaignReportSummary> {
   return mcFetch(`/reports/${campaignId}`);
 }
 
 export async function deleteCampaign(campaignId: string): Promise<void> {
   await mcFetch(`/campaigns/${campaignId}`, { method: "DELETE" });
+}
+
+// ── Email activity (opens/clicks/bounces per recipient) ─────────────────────
+//
+// Mailchimp Marketing does NOT push opens/clicks as webhooks — the list
+// webhook only covers subscribe/unsubscribe/cleaned/campaign-send-status
+// (see addListWebhook above). Real engagement data for a "marketing" mode
+// send has to be pulled on demand from the Reports API, which is what this
+// function does — called from the email-history sync route when the page
+// is open, same polling pattern already used for Mandrill gap-filling.
+
+export interface EmailActivityEvent {
+  action: "open" | "click" | "bounce";
+  timestamp: string;
+  url?: string;
+}
+
+export interface EmailActivityRecord {
+  email_address: string;
+  activity: EmailActivityEvent[];
+}
+
+const EMAIL_ACTIVITY_PAGE_SIZE = 1000;
+
+export async function getCampaignEmailActivity(
+  campaignId: string,
+): Promise<EmailActivityRecord[]> {
+  const all: EmailActivityRecord[] = [];
+  let offset = 0;
+
+  while (true) {
+    const page = await mcFetch<{
+      emails: EmailActivityRecord[];
+      total_items: number;
+    }>(
+      `/reports/${campaignId}/email-activity?count=${EMAIL_ACTIVITY_PAGE_SIZE}&offset=${offset}`,
+    );
+
+    all.push(...(page.emails ?? []));
+
+    offset += EMAIL_ACTIVITY_PAGE_SIZE;
+    if (!page.emails || page.emails.length < EMAIL_ACTIVITY_PAGE_SIZE) break;
+    if (offset >= (page.total_items ?? 0)) break;
+  }
+
+  return all;
+}
+
+/**
+ * Collapses one recipient's raw activity array into our internal
+ * EmailRecipientEvent status vocabulary, taking the highest-priority
+ * event (click > open > bounce).
+ */
+export function lastEventFromActivity(
+  activity: EmailActivityEvent[],
+): "clicked" | "opened" | "bounced" | null {
+  if (activity.some((a) => a.action === "click")) return "clicked";
+  if (activity.some((a) => a.action === "open")) return "opened";
+  if (activity.some((a) => a.action === "bounce")) return "bounced";
+  return null;
 }
 
 // ── Webhooks (per-audience) ──────────────────────────────────────────────────
@@ -201,6 +272,8 @@ export const mailchimpMarketing = {
   setCampaignContent,
   sendCampaign,
   getCampaignReport,
+  getCampaignEmailActivity,
+  lastEventFromActivity,
   deleteCampaign,
   addListWebhook,
 };

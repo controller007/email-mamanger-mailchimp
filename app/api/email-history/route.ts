@@ -6,6 +6,10 @@ import {
   getMessageInfo,
   lastEventFromMessageInfo,
 } from "@/app/_lib/email/mailchimp-transactional-client";
+import {
+  getCampaignEmailActivity,
+  lastEventFromActivity,
+} from "@/app/_lib/email/mailchimp-marketing-client";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -163,6 +167,8 @@ async function syncHistories(
       complainedCount: true,
       unsubscribedCount: true,
       status: true,
+      sendMethod: true,
+      mailchimpCampaignId: true,
     },
   });
 
@@ -224,7 +230,72 @@ async function syncHistories(
 
     let finalCounts = phase1Counts;
 
-    if (
+    if (history.sendMethod === "marketing" && history.mailchimpCampaignId) {
+      // ── Marketing sends: Mailchimp never pushes opens/clicks as webhooks —
+      // pull them from the Reports API's per-recipient email-activity feed.
+      console.log(
+        `[sync] ${history.id}: polling Mailchimp Marketing email-activity for campaign ${history.mailchimpCampaignId}`,
+      );
+
+      try {
+        const activity = await getCampaignEmailActivity(
+          history.mailchimpCampaignId,
+        );
+
+        const newEvents: {
+          recipientEmail: string;
+          status: string;
+          providerMessageId: string;
+        }[] = [];
+
+        for (const record of activity) {
+          const lastEvent = lastEventFromActivity(record.activity);
+          if (!lastEvent || !record.email_address) continue;
+
+          newEvents.push({
+            recipientEmail: record.email_address,
+            status: lastEvent,
+            // Include status in the key so a recipient progressing
+            // opened -> clicked writes a second row instead of colliding
+            // with the emailHistoryId+providerMessageId unique index.
+            providerMessageId: `mc-campaign-${history.mailchimpCampaignId}-${record.email_address}-${lastEvent}`,
+          });
+        }
+
+        const toInsert = newEvents.filter(
+          (e) =>
+            !existingEvents.some(
+              (ex) =>
+                ex.recipientEmail === e.recipientEmail &&
+                ex.status === e.status,
+            ),
+        );
+
+        if (toInsert.length > 0) {
+          await prisma.emailRecipientEvent.createMany({
+            data: toInsert.map((e) => ({
+              emailHistoryId: history.id,
+              recipientEmail: e.recipientEmail,
+              status: e.status,
+              providerMessageId: e.providerMessageId,
+            })),
+          });
+          console.log(
+            `[sync] ${history.id}: wrote ${toInsert.length} new events from Mailchimp Marketing email-activity`,
+          );
+        }
+
+        finalCounts = aggregateFromEvents([
+          ...existingEvents,
+          ...newEvents.map((e) => ({ ...e, emailHistoryId: history.id })),
+        ]);
+      } catch (err) {
+        console.error(
+          `[sync] ${history.id}: failed to poll Mailchimp Marketing email-activity:`,
+          err,
+        );
+      }
+    } else if (
       uncoveredBatchIds.length > 0 &&
       !allAccountedFor &&
       history.batchIds.length > 0
