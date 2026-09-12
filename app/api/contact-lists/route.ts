@@ -9,7 +9,7 @@ import { getSession, requireAuth } from "@/app/_lib/auth/session";
 import prisma from "@/app/_lib/db/prisma";
 import { revalidatePath } from "next/cache";
 
-const MAX_CONTACTS = 50;
+const MAX_CONTACTS = 100;
 
 export async function POST(request: NextRequest) {
   try {

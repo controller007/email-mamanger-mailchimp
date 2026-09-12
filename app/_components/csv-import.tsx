@@ -90,7 +90,7 @@ export interface InvalidRow {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const MAX_CONTACTS = 50;
+export const MAX_CONTACTS = 100;
 
 export const DEFAULT_EXCLUDED_DOMAIN_OPTIONS = [
   "gmail.com",
