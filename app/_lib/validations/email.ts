@@ -29,6 +29,9 @@ export const emailComposeSchema = z.object({
     .max(10, "Maximum 10 contact lists per campaign"),
   senderId: z.string().min(1, "Sender is required"),
   preheader: z.string().max(200, "Preheader is too long").optional(),
+  // "transactional" = Mailchimp Transactional (Mandrill), one send per contact
+  // "marketing" = Mailchimp Marketing campaign against a synced audience
+  sendMethod: z.enum(["transactional", "marketing"]).default("transactional"),
 });
 export const bulkEmailInputSchema = z.object({
   emails: z.string().min(1, "Please enter email addresses"),

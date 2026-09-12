@@ -25,7 +25,7 @@ interface SendIntervalModalProps {
 }
 
 const PRESETS = [
-  { label: "No delay", value: 0, desc: "Fire as fast as Resend allows", icon: Zap },
+  { label: "No delay", value: 0, desc: "Fire as fast as Mailchimp allows", icon: Zap },
   { label: "3 seconds", value: 3, desc: "Good for small lists", icon: Clock },
   { label: "5 seconds", value: 5, desc: "Balanced — recommended", icon: Clock },
   { label: "10 seconds", value: 10, desc: "Conservative, high deliverability", icon: Clock },

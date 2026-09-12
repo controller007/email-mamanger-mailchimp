@@ -1,82 +1,8 @@
-// app/_lib/email/resend-client.tsx
-import { Resend } from "resend";
-
-export const resend = new Resend(process.env.RESEND_API_KEY);
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface BatchEmailPayload {
-  to: string;
-  subject: string;
-  html: string;
-  from: string;
-  headers?: Record<string, string>;
-  tags?: { name: string; value: string }[];
-}
-
-export interface SendBatchOptions {
-  emails: BatchEmailPayload[];
-  idempotencyKeyPrefix?: string;
-}
-
-export async function sendBatch(
-  emails: BatchEmailPayload[],
-  idempotencyKeyPrefix?: string,
-): Promise<{ ids: string[]; failedCount: number }> {
-  const CHUNK_SIZE = 100;
-  const chunks: BatchEmailPayload[][] = [];
-
-  for (let i = 0; i < emails.length; i += CHUNK_SIZE) {
-    chunks.push(emails.slice(i, i + CHUNK_SIZE));
-  }
-
-  const allIds: string[] = [];
-  let failedCount = 0;
-
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    const idempotencyKey = idempotencyKeyPrefix
-      ? `${idempotencyKeyPrefix}-chunk-${i}`
-      : undefined;
-
-    try {
-      const options = idempotencyKey ? { idempotencyKey } : undefined;
-      const result = await resend.batch.send(chunk as any, options as any);
-
-      if (result.error) {
-        console.error(`Batch chunk ${i} error:`, result.error);
-        failedCount += chunk.length;
-        continue;
-      }
-
-      if (result.data) {
-        const rawData = result.data;
-        const ids = Array.isArray(rawData.data)
-          ? rawData.data.map((r: { id: string }) => r.id).filter(Boolean)
-          : [];
-
-        if (ids.length === 0 && chunk.length > 0) {
-          console.warn(
-            `Batch chunk ${i}: got 0 IDs from ${chunk.length} emails. ` +
-              `result.data shape: ${JSON.stringify(Object.keys(rawData))}`,
-          );
-        }
-
-        allIds.push(...ids);
-      }
-    } catch (err) {
-      console.error(`Batch chunk ${i} threw:`, err);
-      failedCount += chunk.length;
-    }
-  }
-
-  console.log(
-    `sendBatch complete: ${allIds.length} IDs collected, ${failedCount} failed`,
-  );
-  return { ids: allIds, failedCount };
-}
-
-// ─── Template Generation ──────────────────────────────────────────────────────
+// app/_lib/email/html-template.ts
+//
+// Provider-agnostic HTML templating helpers (used to be part of
+// resend-client.tsx — extracted since Mailchimp Transactional/Marketing
+// both consume plain HTML strings, no SDK-specific typing needed here).
 
 export interface TemplateOptions {
   body: string; // HTML from rich text editor
@@ -119,24 +45,10 @@ export function generateEmailTemplate(options: TemplateOptions): string {
 
   const processedBody = variables ? replaceVariables(body, variables) : body;
 
-  // ── If the body is already a com plete HTML document (visual builder output),
-  //    inject the unsubscribe link before </body> and return it directly.
   if (isFullHtml(processedBody)) {
-    // const unsubFooter = unsubscribeUrl
-    //   ? `<div style="text-align:center;padding:12px 16px;font-size:11px;color:#9ca3af;font-family:-apple-system,sans-serif;">
-    //        You're receiving this from <strong>${senderName}</strong>.
-    //        <a href="${unsubscribeUrl}" style="color:#6b7280;text-decoration:underline;">Unsubscribe</a>
-    //      </div>`
-    //   : "";
-
-    // Inject footer just before closing </body> tag
-    // if (unsubFooter) {
-    //   return processedBody.replace(/<\/body>/i, `${unsubFooter}</body>`);
-    // }
     return processedBody;
   }
 
-  // ── Otherwise wrap the rich-text body in the standard template ──────────
   const unsubscribeSection = unsubscribeUrl
     ? `<tr>
         <td style="padding:20px 40px;text-align:center;border-top:1px solid #e5e7eb;">
@@ -198,6 +110,7 @@ export function generateEmailTemplate(options: TemplateOptions): string {
             </td>
           </tr>
           <tr><td style="height:16px;"></td></tr>
+          ${unsubscribeSection}
         </table>
       </td>
     </tr>
@@ -205,4 +118,3 @@ export function generateEmailTemplate(options: TemplateOptions): string {
 </body>
 </html>`;
 }
-

@@ -2,13 +2,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/app/_lib/auth/session";
 import prisma from "@/app/_lib/db/prisma";
-import { resend } from "@/app/_lib/email/resend-client";
+import {
+  getMessageInfo,
+  lastEventFromMessageInfo,
+} from "@/app/_lib/email/mailchimp-transactional-client";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SYNC_COOLDOWN_MS = 60_000;
-const RESEND_CHUNK_SIZE = 8;
-const RESEND_CHUNK_PAUSE_MS = 150;
+const MANDRILL_CHUNK_SIZE = 8;
+const MANDRILL_CHUNK_PAUSE_MS = 150;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -36,7 +39,7 @@ type EventRow = {
   emailHistoryId: string;
   recipientEmail: string;
   status: string;
-  resendMessageId: string | null;
+  providerMessageId: string | null;
 };
 
 type Counts = {
@@ -172,7 +175,7 @@ async function syncHistories(
       emailHistoryId: true,
       recipientEmail: true,
       status: true,
-      resendMessageId: true,
+      providerMessageId: true,
     },
   });
 
@@ -194,7 +197,7 @@ async function syncHistories(
 
     // How many batchIds have no event row yet? (webhook gap)
     const coveredMessageIds = new Set(
-      existingEvents.map((e) => e.resendMessageId).filter(Boolean) as string[],
+      existingEvents.map((e) => e.providerMessageId).filter(Boolean) as string[],
     );
     const uncoveredBatchIds = (history.batchIds ?? []).filter(
       (id) => !coveredMessageIds.has(id),
@@ -227,31 +230,27 @@ async function syncHistories(
       history.batchIds.length > 0
     ) {
       console.log(
-        `[sync] ${history.id}: gap-filling ${uncoveredBatchIds.length} IDs via Resend API`,
+        `[sync] ${history.id}: gap-filling ${uncoveredBatchIds.length} IDs via Mailchimp Transactional API`,
       );
 
       const newEvents: {
         recipientEmail: string;
         status: string;
-        resendMessageId: string;
+        providerMessageId: string;
       }[] = [];
 
-      for (let i = 0; i < uncoveredBatchIds.length; i += RESEND_CHUNK_SIZE) {
-        const chunk = uncoveredBatchIds.slice(i, i + RESEND_CHUNK_SIZE);
+      for (let i = 0; i < uncoveredBatchIds.length; i += MANDRILL_CHUNK_SIZE) {
+        const chunk = uncoveredBatchIds.slice(i, i + MANDRILL_CHUNK_SIZE);
 
         const results = await Promise.all(
           chunk.map(async (messageId) => {
-            try {
-              const { data, error } = await resend.emails.get(messageId);
-              if (error || !data) return null;
-              return {
-                messageId,
-                lastEvent: (data.last_event as string | undefined) ?? null,
-                to: Array.isArray(data.to) ? data.to[0] : data.to || "",
-              };
-            } catch {
-              return null;
-            }
+            const info = await getMessageInfo(messageId);
+            if (!info) return null;
+            return {
+              messageId,
+              lastEvent: lastEventFromMessageInfo(info),
+              to: info.email || "",
+            };
           }),
         );
 
@@ -262,12 +261,12 @@ async function syncHistories(
           newEvents.push({
             recipientEmail: result.to,
             status: result.lastEvent,
-            resendMessageId: result.messageId,
+            providerMessageId: result.messageId,
           });
         }
 
-        if (i + RESEND_CHUNK_SIZE < uncoveredBatchIds.length) {
-          await sleep(RESEND_CHUNK_PAUSE_MS);
+        if (i + MANDRILL_CHUNK_SIZE < uncoveredBatchIds.length) {
+          await sleep(MANDRILL_CHUNK_PAUSE_MS);
         }
       }
 
@@ -277,7 +276,7 @@ async function syncHistories(
           (e) =>
             !existingEvents.some(
               (ex) =>
-                ex.resendMessageId === e.resendMessageId &&
+                ex.providerMessageId === e.providerMessageId &&
                 ex.status === e.status,
             ),
         );
@@ -288,11 +287,11 @@ async function syncHistories(
               emailHistoryId: history.id,
               recipientEmail: e.recipientEmail,
               status: e.status,
-              resendMessageId: e.resendMessageId,
+              providerMessageId: e.providerMessageId,
             })),
           });
           console.log(
-            `[sync] ${history.id}: wrote ${toInsert.length} new events from Resend gap-fill`,
+            `[sync] ${history.id}: wrote ${toInsert.length} new events from Mailchimp gap-fill`,
           );
         }
 

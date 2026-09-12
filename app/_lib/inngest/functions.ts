@@ -1,21 +1,26 @@
-
 import { inngest } from "./client";
 import {
-  resend,
-  generateEmailTemplate,
-  replaceVariables,
-} from "@/app/_lib/email/resend-client";
+  sendMessage as mandrillSend,
+  type MandrillSendResult,
+} from "@/app/_lib/email/mailchimp-transactional-client";
+import {
+  createAudience,
+  syncAudienceMembers,
+  createCampaign,
+  setCampaignContent,
+  sendCampaign,
+  addListWebhook,
+} from "@/app/_lib/email/mailchimp-marketing-client";
+import { generateEmailTemplate, replaceVariables } from "@/app/_lib/email/html-template";
 import prisma from "@/app/_lib/db/prisma";
 
 const MIN_SEND_GAP_MS = 600;
-
 const MAX_SEND_RETRIES = 3;
-
 const RETRY_DELAYS_MS = [1000, 3000, 8000];
 
 async function sendWithRetry(
-  payload: Parameters<typeof resend.emails.send>[0],
-) {
+  payload: Parameters<typeof mandrillSend>[0],
+): Promise<{ data: MandrillSendResult | null; error: Error | null }> {
   let lastError: unknown = null;
 
   for (let attempt = 0; attempt <= MAX_SEND_RETRIES; attempt++) {
@@ -28,60 +33,84 @@ async function sendWithRetry(
     }
 
     try {
-      const { data, error } = await resend.emails.send(payload);
+      const [result] = await mandrillSend(payload);
 
-      // Resend 429 rate limit comes back as an error object, not a throw
-      if (error) {
-        const msg = (error as any)?.message ?? "";
-        const is429 =
-          msg.toLowerCase().includes("rate") ||
-          msg.toLowerCase().includes("429") ||
-          (error as any)?.statusCode === 429;
-
-        if (is429 && attempt < MAX_SEND_RETRIES) {
-          lastError = error;
-          continue; // retry
-        }
-        return { data: null, error };
+      if (result.status === "rejected" || result.status === "invalid") {
+        return {
+          data: null,
+          error: new Error(result.reject_reason || result.status),
+        };
       }
 
-      return { data, error: null };
+      return { data: result, error: null };
     } catch (err: unknown) {
       lastError = err;
-      const isNetworkErr =
+      const isRetryable =
         err instanceof Error &&
-        (err.message.includes("fetch") ||
-          err.message.includes("network") ||
-          err.message.includes("ECONNRESET"));
+        (err.message.toLowerCase().includes("rate") ||
+          err.message.toLowerCase().includes("429") ||
+          err.message.toLowerCase().includes("network") ||
+          err.message.toLowerCase().includes("econnreset"));
 
-      if (isNetworkErr && attempt < MAX_SEND_RETRIES) continue;
+      if (isRetryable && attempt < MAX_SEND_RETRIES) continue;
       throw err;
     }
   }
 
-  return { data: null, error: lastError };
+  return { data: null, error: lastError as Error };
 }
 
-// ── Main function ─────────────────────────────────────────────────────────────
+async function loadContactsForList(contactListId: string, userId: string) {
+  const suppressions = await prisma.emailSuppression.findMany({
+    where: { userId },
+    select: { email: true },
+  });
+  const suppressedSet = new Set(suppressions.map((s) => s.email));
+
+  const dbContacts = await prisma.contact.findMany({
+    where: {
+      contactListId,
+      isSubscribed: true,
+      isBounced: false,
+      isComplained: false,
+    },
+    select: { email: true, firstName: true, lastName: true, company: true },
+  });
+
+  if (dbContacts.length > 0) {
+    return dbContacts.filter((c) => !suppressedSet.has(c.email));
+  }
+
+  const list = await prisma.contactList.findUnique({
+    where: { id: contactListId },
+    select: { emails: true },
+  });
+  return (list?.emails ?? [])
+    .filter((e) => !suppressedSet.has(e))
+    .map((e) => ({
+      email: e,
+      firstName: null as string | null,
+      lastName: null as string | null,
+      company: null as string | null,
+    }));
+}
+
+// ── Transactional path: one Mandrill send per contact ───────────────────────
 
 export const sendCampaignFunction = inngest.createFunction(
   {
     id: "send-campaign",
-    name: "Send Campaign (Sequential Lists)",
+    name: "Send Campaign (Sequential Lists, Transactional)",
     retries: 3,
     triggers: [{ event: "campaign/send" }],
-    // One campaign at a time per user — prevents accidental parallel blasts
-    concurrency: {
-      limit: 1,
-      key: "event.data.userId",
-    },
+    concurrency: { limit: 1, key: "event.data.userId" },
   },
   async ({ event, step }) => {
     const {
       campaignJobId,
       userId,
-      contactListIds, // string[] — processed ONE BY ONE in order
-      emailHistoryIds, // string[] — parallel index with contactListIds
+      contactListIds,
+      emailHistoryIds,
       senderName,
       senderEmail,
       subject,
@@ -91,7 +120,6 @@ export const sendCampaignFunction = inngest.createFunction(
       appUrl,
     } = event.data;
 
-    // Effective gap: user's interval OR the minimum safe gap, whichever is larger
     const effectiveGapMs = Math.max(
       (intervalSeconds ?? 0) * 1000,
       MIN_SEND_GAP_MS,
@@ -103,13 +131,12 @@ export const sendCampaignFunction = inngest.createFunction(
         `effective gap: ${effectiveGapMs}ms`,
     );
 
-    if (!process.env.RESEND_API_KEY) {
+    if (!process.env.MAILCHIMP_TRANSACTIONAL_API_KEY) {
       throw new Error(
-        "[send-campaign] RESEND_API_KEY is not set in environment variables.",
+        "[send-campaign] MAILCHIMP_TRANSACTIONAL_API_KEY is not set in environment variables.",
       );
     }
 
-    // ── Update overall campaign job to running ────────────────────────────────
     await step.run("mark-campaign-running", async () => {
       await prisma.campaignJob.update({
         where: { id: campaignJobId },
@@ -120,7 +147,6 @@ export const sendCampaignFunction = inngest.createFunction(
     let grandTotalSent = 0;
     let grandTotalFailed = 0;
 
-    // ── Process each list SEQUENTIALLY ───────────────────────────────────────
     for (let listIndex = 0; listIndex < contactListIds.length; listIndex++) {
       const contactListId = contactListIds[listIndex];
       const emailHistoryId = emailHistoryIds[listIndex];
@@ -129,7 +155,6 @@ export const sendCampaignFunction = inngest.createFunction(
         `[send-campaign] Processing list ${listIndex + 1}/${contactListIds.length}: ${contactListId}`,
       );
 
-      // Mark this list's history as sending
       await step.run(`mark-sending-${listIndex}`, async () => {
         await prisma.emailHistory.update({
           where: { id: emailHistoryId },
@@ -137,69 +162,11 @@ export const sendCampaignFunction = inngest.createFunction(
         });
       });
 
-      // Load contacts for this list
-      const contacts = await step.run(
-        `load-contacts-${listIndex}`,
-        async () => {
-          const suppressions = await prisma.emailSuppression.findMany({
-            where: { userId },
-            select: { email: true },
-          });
-          const suppressedSet = new Set(suppressions.map((s) => s.email));
-
-          const dbContacts = await prisma.contact.findMany({
-            where: {
-              contactListId,
-              isSubscribed: true,
-              isBounced: false,
-              isComplained: false,
-            },
-            select: {
-              email: true,
-              firstName: true,
-              lastName: true,
-              company: true,
-            },
-          });
-
-          console.log(
-            `[send-campaign] List ${listIndex + 1}: ${dbContacts.length} DB contacts`,
-          );
-
-          if (dbContacts.length > 0) {
-            const filtered = dbContacts.filter(
-              (c) => !suppressedSet.has(c.email),
-            );
-            console.log(
-              `[send-campaign] List ${listIndex + 1}: ${filtered.length} after suppression`,
-            );
-            return filtered;
-          }
-
-          // Fallback to ContactList.emails[]
-          const list = await prisma.contactList.findUnique({
-            where: { id: contactListId },
-            select: { emails: true },
-          });
-          const fallback = (list?.emails ?? [])
-            .filter((e) => !suppressedSet.has(e))
-            .map((e) => ({
-              email: e,
-              firstName: null as string | null,
-              lastName: null as string | null,
-              company: null as string | null,
-            }));
-          console.log(
-            `[send-campaign] List ${listIndex + 1}: ${fallback.length} fallback contacts`,
-          );
-          return fallback;
-        },
+      const contacts = await step.run(`load-contacts-${listIndex}`, () =>
+        loadContactsForList(contactListId, userId),
       );
 
       if (contacts.length === 0) {
-        console.log(
-          `[send-campaign] List ${listIndex + 1}: no contacts, skipping`,
-        );
         await step.run(`mark-empty-${listIndex}`, async () => {
           await prisma.emailHistory.update({
             where: { id: emailHistoryId },
@@ -212,18 +179,14 @@ export const sendCampaignFunction = inngest.createFunction(
       await step.run(`set-total-${listIndex}`, async () => {
         await prisma.campaignJob.update({
           where: { id: campaignJobId },
-          data: {
-            totalContacts: { increment: contacts.length },
-          },
+          data: { totalContacts: { increment: contacts.length } },
         });
       });
 
-      const fromAddress = `${senderName} <${senderEmail}>`;
       let listSent = 0;
       let listFailed = 0;
       const listMessageIds: string[] = [];
 
-      // ── Send each contact in this list ──────────────────────────────────────
       for (let i = 0; i < contacts.length; i++) {
         const contact = contacts[i];
 
@@ -255,46 +218,26 @@ export const sendCampaignFunction = inngest.createFunction(
               variables,
             });
 
-            console.log(
-              `[send-campaign] List ${listIndex + 1} [${i + 1}/${contacts.length}] → ${contact.email}`,
-            );
-
             const { data, error } = await sendWithRetry({
-              from: fromAddress,
-              to: contact.email,
+              from: { email: senderEmail, name: senderName },
+              to: [{ email: contact.email }],
               subject: personalizedSubject,
               html,
               headers: {
                 "List-Unsubscribe": `<${unsubscribeUrl}>`,
                 "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
               },
-              tags: [
-                { name: "email_history_id", value: emailHistoryId },
-                { name: "contact_list_id", value: contactListId },
-              ],
+              tags: ["email_history_id_" + emailHistoryId],
+              metadata: { email_history_id: emailHistoryId, contact_list_id: contactListId },
             });
 
-            if (error || !data?.id) {
-              console.error(
-                `[send-campaign] FAILED for ${contact.email}:`,
-                error,
-              );
+            if (error || !data?._id) {
+              console.error(`[send-campaign] FAILED for ${contact.email}:`, error);
               await prisma.emailRecipientEvent.create({
-                data: {
-                  emailHistoryId,
-                  recipientEmail: contact.email,
-                  status: "failed",
-                },
+                data: { emailHistoryId, recipientEmail: contact.email, status: "failed" },
               });
-              return {
-                success: false,
-                messageId: null as string | null,
-              };
+              return { success: false, messageId: null as string | null };
             }
-
-            console.log(
-              `[send-campaign] SUCCESS ${contact.email} → ${data.id}`,
-            );
 
             try {
               await prisma.emailRecipientEvent.create({
@@ -302,23 +245,16 @@ export const sendCampaignFunction = inngest.createFunction(
                   emailHistoryId,
                   recipientEmail: contact.email,
                   status: "sent",
-                  resendMessageId: data.id,
+                  providerMessageId: data._id,
                 },
               });
             } catch (dbErr: any) {
-              // P2002 = duplicate key, safe to ignore
               if (dbErr?.code !== "P2002") {
-                console.error(
-                  `[send-campaign] DB write error for ${contact.email}:`,
-                  dbErr,
-                );
+                console.error(`[send-campaign] DB write error for ${contact.email}:`, dbErr);
               }
             }
 
-            return {
-              success: true,
-              messageId: data.id as string | null,
-            };
+            return { success: true, messageId: data._id as string | null };
           },
         );
 
@@ -329,13 +265,10 @@ export const sendCampaignFunction = inngest.createFunction(
           listFailed++;
         }
 
-        // Gap between emails — skip after the last contact of the last list
         const isLastContactOfLastList =
           i === contacts.length - 1 && listIndex === contactListIds.length - 1;
 
         if (!isLastContactOfLastList) {
-          // Use Inngest step.sleep for intervals >= 2s so it's durable.
-          // For sub-2s gaps use a plain setTimeout (not worth checkpointing).
           if (effectiveGapMs >= 2000) {
             await step.sleep(
               `gap-l${listIndex}-c${i}`,
@@ -349,7 +282,6 @@ export const sendCampaignFunction = inngest.createFunction(
         }
       }
 
-      // Finalise this list's EmailHistory
       await step.run(`finalise-list-${listIndex}`, async () => {
         await prisma.emailHistory.update({
           where: { id: emailHistoryId },
@@ -360,16 +292,12 @@ export const sendCampaignFunction = inngest.createFunction(
             batchIds: listMessageIds,
           },
         });
-        console.log(
-          `[send-campaign] List ${listIndex + 1} done. sent=${listSent}, failed=${listFailed}`,
-        );
       });
 
       grandTotalSent += listSent;
       grandTotalFailed += listFailed;
     }
 
-    // ── Finalise the overall CampaignJob ──────────────────────────────────────
     await step.run("finalise-campaign", async () => {
       await prisma.campaignJob.update({
         where: { id: campaignJobId },
@@ -380,10 +308,157 @@ export const sendCampaignFunction = inngest.createFunction(
           completedAt: new Date(),
         },
       });
-      console.log(
-        `[send-campaign] Campaign ${campaignJobId} complete. ` +
-          `totalSent=${grandTotalSent}, totalFailed=${grandTotalFailed}`,
+    });
+
+    return { sent: grandTotalSent, failed: grandTotalFailed };
+  },
+);
+
+// ── Marketing path: sync audience + create/send one Mailchimp campaign per list
+
+export const sendMarketingCampaignFunction = inngest.createFunction(
+  {
+    id: "send-marketing-campaign",
+    name: "Send Campaign (Mailchimp Marketing)",
+    retries: 3,
+    triggers: [{ event: "campaign/send-marketing" }],
+    concurrency: { limit: 1, key: "event.data.userId" },
+  },
+  async ({ event, step }) => {
+    const {
+      campaignJobId,
+      userId,
+      contactListIds,
+      emailHistoryIds,
+      senderName,
+      senderEmail,
+      subject,
+      emailBody,
+      preheader,
+      appUrl,
+    } = event.data;
+
+    if (!process.env.MAILCHIMP_MARKETING_API_KEY) {
+      throw new Error(
+        "[send-marketing-campaign] MAILCHIMP_MARKETING_API_KEY is not set.",
       );
+    }
+
+    await step.run("mark-campaign-running", async () => {
+      await prisma.campaignJob.update({
+        where: { id: campaignJobId },
+        data: { status: "running" },
+      });
+    });
+
+    let grandTotalSent = 0;
+    let grandTotalFailed = 0;
+
+    for (let listIndex = 0; listIndex < contactListIds.length; listIndex++) {
+      const contactListId = contactListIds[listIndex];
+      const emailHistoryId = emailHistoryIds[listIndex];
+
+      await step.run(`mark-sending-${listIndex}`, async () => {
+        await prisma.emailHistory.update({
+          where: { id: emailHistoryId },
+          data: { status: "sending" },
+        });
+      });
+
+      const contacts = await step.run(`load-contacts-${listIndex}`, () =>
+        loadContactsForList(contactListId, userId),
+      );
+
+      if (contacts.length === 0) {
+        await step.run(`mark-empty-${listIndex}`, async () => {
+          await prisma.emailHistory.update({
+            where: { id: emailHistoryId },
+            data: { status: "sent", sentCount: 0 },
+          });
+        });
+        continue;
+      }
+
+      // ── Ensure a Mailchimp audience exists for this list ─────────────────
+      const audienceId = await step.run(`ensure-audience-${listIndex}`, async () => {
+        const list = await prisma.contactList.findUnique({ where: { id: contactListId } });
+        if (list?.mailchimpAudienceId) return list.mailchimpAudienceId;
+
+        const audience = await createAudience({
+          name: `${list?.name ?? "List"} (${contactListId})`,
+          fromEmail: senderEmail,
+          fromName: senderName,
+          replyTo: senderEmail,
+        });
+
+        await prisma.contactList.update({
+          where: { id: contactListId },
+          data: { mailchimpAudienceId: audience.id },
+        });
+
+        try {
+          await addListWebhook(
+            audience.id,
+            `${appUrl}/api/webhooks/mailchimp-marketing`,
+          );
+        } catch (e) {
+          console.error("[send-marketing-campaign] Failed to register list webhook:", e);
+        }
+
+        return audience.id;
+      });
+
+      await step.run(`sync-members-${listIndex}`, () =>
+        syncAudienceMembers(audienceId, contacts),
+      );
+
+      const html = generateEmailTemplate({
+        body: emailBody,
+        subject,
+        senderName,
+        preheader,
+        unsubscribeUrl: undefined, // Mailchimp injects its own unsubscribe footer/merge tag
+      });
+
+      const campaignId = await step.run(`create-campaign-${listIndex}`, async () => {
+        const campaign = await createCampaign({
+          audienceId,
+          subject,
+          fromName: senderName,
+          fromEmail: senderEmail,
+          replyTo: senderEmail,
+          title: `Campaign ${emailHistoryId}`,
+        });
+        await setCampaignContent(campaign.id, html);
+        return campaign.id;
+      });
+
+      await step.run(`send-campaign-${listIndex}`, () => sendCampaign(campaignId));
+
+      await step.run(`finalise-list-${listIndex}`, async () => {
+        await prisma.emailHistory.update({
+          where: { id: emailHistoryId },
+          data: {
+            status: "sent",
+            sentCount: contacts.length,
+            mailchimpCampaignId: campaignId,
+          },
+        });
+      });
+
+      grandTotalSent += contacts.length;
+    }
+
+    await step.run("finalise-campaign", async () => {
+      await prisma.campaignJob.update({
+        where: { id: campaignJobId },
+        data: {
+          status: "done",
+          sentCount: grandTotalSent,
+          failedCount: grandTotalFailed,
+          completedAt: new Date(),
+        },
+      });
     });
 
     return { sent: grandTotalSent, failed: grandTotalFailed };

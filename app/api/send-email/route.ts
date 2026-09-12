@@ -35,6 +35,7 @@ export async function POST(request: NextRequest) {
       contactListIds,
       senderId,
       preheader,
+      sendMethod,
     } = validationResult.data;
 
     // Validate sender
@@ -81,7 +82,7 @@ export async function POST(request: NextRequest) {
           senderId: sender.id,
           senderEmail: sender.email,
           senderName: sender.name,
-          sendMethod: "staggered",
+          sendMethod,
           status: "queued",
           sentCount: 0,
         },
@@ -102,7 +103,10 @@ export async function POST(request: NextRequest) {
 
     // ── Step 3: Fire ONE Inngest event — all lists processed sequentially ──────
     await inngest.send({
-      name: "campaign/send" as const,
+      name:
+        sendMethod === "marketing"
+          ? ("campaign/send-marketing" as const)
+          : ("campaign/send" as const),
       data: {
         campaignJobId: campaignJob.id,
         userId: session.user.id,

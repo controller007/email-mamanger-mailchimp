@@ -34,8 +34,8 @@ export function DnsRecordsDisplay({
     setTimeout(() => setCopiedField(""), 2000);
   };
 
-  // Append DMARC record — Resend doesn't provide this but it's required by
-  // Gmail, Yahoo, and Microsoft for bulk senders. Built from the domain name.
+  // Append DMARC record — Mailchimp Transactional doesn't provide this but it's
+  // required by Gmail, Yahoo, and Microsoft for bulk senders. Built from the domain name.
   const dmarcRecord = {
     type: "TXT",
     name: `_dmarc`,

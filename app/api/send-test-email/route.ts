@@ -1,7 +1,8 @@
 // app/api/send-test-email/route.ts
 import { type NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/app/_lib/auth/session";
-import { resend, generateEmailTemplate } from "@/app/_lib/email/resend-client";
+import { sendMessage } from "@/app/_lib/email/mailchimp-transactional-client";
+import { generateEmailTemplate } from "@/app/_lib/email/html-template";
 import prisma from "@/app/_lib/db/prisma";
 
 export async function POST(request: NextRequest) {
@@ -55,17 +56,24 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const { error } = await resend.emails.send({
-      from: `${sender.name} <${sender.email}>`,
-      to: testEmail,
-      subject: `[TEST] ${subject}`,
-      html,
-    });
+    try {
+      const [result] = await sendMessage({
+        from: { email: sender.email, name: sender.name },
+        to: [{ email: testEmail }],
+        subject: `[TEST] ${subject}`,
+        html,
+      });
 
-    if (error) {
-      console.error("Test email error:", error);
+      if (result.status === "rejected" || result.status === "invalid") {
+        return NextResponse.json(
+          { error: result.reject_reason || "Failed to send test email" },
+          { status: 500 },
+        );
+      }
+    } catch (err) {
+      console.error("Test email error:", err);
       return NextResponse.json(
-        { error: error.message || "Failed to send test email" },
+        { error: err instanceof Error ? err.message : "Failed to send test email" },
         { status: 500 },
       );
     }

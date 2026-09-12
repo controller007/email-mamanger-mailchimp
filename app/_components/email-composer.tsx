@@ -472,6 +472,9 @@ export function EmailComposer({
     () => initialSenderId || searchParams.get("senderId") || "",
   );
   const [filteredSenders, setFilteredSenders] = useState<Sender[]>([]);
+  const [sendMethod, setSendMethod] = useState<"transactional" | "marketing">(
+    "transactional",
+  );
 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -534,6 +537,7 @@ export function EmailComposer({
       contactListIds: selectedListIds,
       senderId: selectedSenderId,
       preheader: preheader.trim() || undefined,
+      sendMethod,
     });
 
     if (!validationResult.success) {
@@ -681,6 +685,48 @@ export function EmailComposer({
                     onChange={setSelectedListIds}
                     disabled={isLoading}
                   />
+                </div>
+
+                {/* ── Send Method ───────────────────────────────── */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                    Send Via *
+                  </Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(
+                      [
+                        {
+                          value: "transactional" as const,
+                          title: "Transactional",
+                          desc: "Mailchimp Transactional (Mandrill) — one send per contact",
+                        },
+                        {
+                          value: "marketing" as const,
+                          title: "Marketing",
+                          desc: "Mailchimp Marketing campaign — synced audience per list",
+                        },
+                      ]
+                    ).map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        disabled={isLoading}
+                        onClick={() => setSendMethod(opt.value)}
+                        className={`text-left p-3 rounded-xl border transition-colors ${
+                          sendMethod === opt.value
+                            ? "border-blue-500 bg-blue-50/60 ring-1 ring-blue-200"
+                            : "border-gray-200 hover:border-gray-300"
+                        }`}
+                      >
+                        <p className="text-sm font-semibold text-gray-900">
+                          {opt.title}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {opt.desc}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 {/* ── Sender ────────────────────────────────────── */}
