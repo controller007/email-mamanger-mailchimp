@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/app/_components/ui/button";
 import { Badge } from "@/app/_components/ui/badge";
+import { Input } from "@/app/_components/ui/input";
 import { Alert, AlertDescription } from "@/app/_components/ui/alert";
 import {
   AlertDialog,
@@ -31,7 +32,6 @@ import {
   Clock,
   XCircle,
   Eye,
-  EyeOff,
   Trash2,
   Loader2,
   Mail,
@@ -50,13 +50,11 @@ import {
 import {
   deleteDomain,
   deleteSender,
-  getDomainRecords,
   verifyDomain,
   enableTracking,
   getTrackingRecords,
   verifyTracking,
 } from "../(dashboard)/domains/actions";
-import { DnsRecordsDisplay } from "./dns-record-display";
 import { EditSenderDialog } from "./sender-dialogue";
 import { AddSenderDialog } from "./add-sender";
 
@@ -548,8 +546,8 @@ function ClickTrackingPanel({
 
 function DomainCard({ domain }: { domain: Domain }) {
   const [isVerifying, setIsVerifying] = useState(false);
-  const [showRecords, setShowRecords] = useState(false);
-  const [records, setRecords] = useState<any[]>([]);
+  const [showCodeInput, setShowCodeInput] = useState(false);
+  const [code, setCode] = useState("");
   const [message, setMessage] = useState("");
   const [messageOk, setMessageOk] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -558,29 +556,22 @@ function DomainCard({ domain }: { domain: Domain }) {
   const cfg = statusConfig(domain.status);
 
   const handleVerify = async () => {
+    if (!code.trim()) return;
     setIsVerifying(true);
     setMessage("");
-    const result = await verifyDomain(domain.id);
+    const result = await verifyDomain(domain.id, code.trim());
     setMessage(
       result.success
         ? result.message || "Verified!"
-        : result.error || "Verification failed",
+        : result.error || result.message || "Verification failed",
     );
     setMessageOk(!!result.success);
-    if (result.success) router.refresh();
+    if (result.success) {
+      setShowCodeInput(false);
+      setCode("");
+      router.refresh();
+    }
     setIsVerifying(false);
-  };
-
-  const handleToggleRecords = async () => {
-    if (showRecords) {
-      setShowRecords(false);
-      return;
-    }
-    const result = await getDomainRecords(domain.id);
-    if (result.success && result.records) {
-      setRecords(result.records);
-      setShowRecords(true);
-    }
   };
 
   const handleDelete = async () => {
@@ -627,43 +618,17 @@ function DomainCard({ domain }: { domain: Domain }) {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleVerify}
-            disabled={isVerifying || domain.status === "verified"}
-            className="rounded-xl"
-          >
-            {isVerifying ? (
-              <>
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                Verifying…
-              </>
-            ) : (
-              <>
-                <Shield className="mr-1.5 h-3.5 w-3.5" />
-                Verify Domain
-              </>
-            )}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleToggleRecords}
-            className="rounded-xl"
-          >
-            {showRecords ? (
-              <>
-                <EyeOff className="mr-1.5 h-3.5 w-3.5" />
-                Hide DNS
-              </>
-            ) : (
-              <>
-                <Eye className="mr-1.5 h-3.5 w-3.5" />
-                View DNS
-              </>
-            )}
-          </Button>
+          {domain.status !== "verified" && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowCodeInput((v) => !v)}
+              className="rounded-xl"
+            >
+              <Shield className="mr-1.5 h-3.5 w-3.5" />
+              Verify Domain
+            </Button>
+          )}
           {domain.status === "verified" && (
             <AddSenderDialog domainId={domain.id} domainName={domain.domain} />
           )}
@@ -721,15 +686,38 @@ function DomainCard({ domain }: { domain: Domain }) {
         </div>
       )}
 
-      {showRecords && records.length > 0 && (
+      {showCodeInput && (
         <div className="px-6 pb-4">
-          <div className="border border-gray-200 rounded-xl bg-gray-50 p-4">
-            <DnsRecordsDisplay
-              records={records}
-              domain={domain.domain}
-              domainId={domain.id}
-              onClose={() => setShowRecords(false)}
-            />
+          <div className="border border-gray-200 rounded-xl bg-gray-50 p-4 space-y-3">
+            <p className="text-sm text-gray-600">
+              Mailchimp emailed a verification code to an address on{" "}
+              <strong>{domain.domain}</strong> when this domain was added.
+              Enter it below to verify.
+            </p>
+            <div className="flex items-center gap-2">
+              <Input
+                placeholder="Verification code"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                disabled={isVerifying}
+                className="max-w-xs"
+              />
+              <Button
+                size="sm"
+                onClick={handleVerify}
+                disabled={isVerifying || !code.trim()}
+                className="rounded-xl"
+              >
+                {isVerifying ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    Verifying…
+                  </>
+                ) : (
+                  "Verify"
+                )}
+              </Button>
+            </div>
           </div>
         </div>
       )}

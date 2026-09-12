@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Loader } from "lucide-react";
+import { Plus, Loader, Mail, CheckCircle2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -15,16 +15,17 @@ import { Button } from "@/app/_components/ui/button";
 import { Input } from "@/app/_components/ui/input";
 import { Label } from "@/app/_components/ui/label";
 import { Alert, AlertDescription } from "@/app/_components/ui/alert";
-import { createDomain } from "../(dashboard)/domains/actions";
-import { DnsRecordsDisplay } from "./dns-record-display";
+import { createDomain, verifyDomain } from "../(dashboard)/domains/actions";
 
 export function AddDomainDialog() {
   const [open, setOpen] = useState(false);
   const [domain, setDomain] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
-  const [dnsRecords, setDnsRecords] = useState<any[]>([]);
-  const [domainId, setDomainId] = useState("");
+  const [addedDomainId, setAddedDomainId] = useState("");
+  const [code, setCode] = useState("");
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [verified, setVerified] = useState(false);
   const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -33,7 +34,6 @@ export function AddDomainDialog() {
     setIsLoading(true);
 
     try {
-      // Clean domain input
       const cleanDomain = domain
         .trim()
         .toLowerCase()
@@ -47,10 +47,7 @@ export function AddDomainDialog() {
         return;
       }
 
-      // Show DNS records
-      setDnsRecords(result.domain?.records || []);
-      setDomainId(result.domain?.id || "");
-
+      setAddedDomainId(result.domain?.id || "");
       router.refresh();
     } catch (err) {
       setError("An unexpected error occurred");
@@ -59,12 +56,34 @@ export function AddDomainDialog() {
     }
   };
 
+  const handleVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setIsVerifying(true);
+
+    try {
+      const result = await verifyDomain(addedDomainId, code);
+      if (!result.success) {
+        setError(result.error || result.message || "Verification failed");
+        setIsVerifying(false);
+        return;
+      }
+      setVerified(true);
+      router.refresh();
+    } catch (err) {
+      setError("An unexpected error occurred");
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
   const handleClose = () => {
     setOpen(false);
     setDomain("");
     setError("");
-    setDnsRecords([]);
-    setDomainId("");
+    setAddedDomainId("");
+    setCode("");
+    setVerified(false);
   };
 
   return (
@@ -75,19 +94,25 @@ export function AddDomainDialog() {
           Add Domain
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            {dnsRecords.length > 0 ? "Configure DNS Records" : "Add New Domain"}
+            {verified
+              ? "Domain Verified"
+              : addedDomainId
+                ? "Enter Verification Code"
+                : "Add New Domain"}
           </DialogTitle>
           <DialogDescription>
-            {dnsRecords.length > 0
-              ? "Add these DNS records to your domain provider"
-              : "Enter the domain you want to use for sending emails"}
+            {verified
+              ? "This domain can now be used to add senders and send campaigns."
+              : addedDomainId
+                ? `Mailchimp emailed a verification code for ${domain} — enter it below to confirm ownership.`
+                : "Enter the domain you want to use for sending emails"}
           </DialogDescription>
         </DialogHeader>
 
-        {dnsRecords.length === 0 ? (
+        {!addedDomainId ? (
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
               <Alert variant="destructive">
@@ -131,13 +156,64 @@ export function AddDomainDialog() {
               </Button>
             </div>
           </form>
+        ) : verified ? (
+          <div className="space-y-4">
+            <Alert className="border-emerald-200 bg-emerald-50">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              <AlertDescription className="text-emerald-800">
+                {domain} is verified and ready to use.
+              </AlertDescription>
+            </Alert>
+            <div className="flex justify-end">
+              <Button onClick={handleClose}>Done</Button>
+            </div>
+          </div>
         ) : (
-          <DnsRecordsDisplay
-            records={dnsRecords}
-            domain={domain}
-            domainId={domainId}
-            onClose={handleClose}
-          />
+          <form onSubmit={handleVerify} className="space-y-4">
+            {error && (
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+
+            <Alert className="border-blue-200 bg-blue-50">
+              <Mail className="h-4 w-4 text-blue-600" />
+              <AlertDescription className="text-blue-800">
+                Check the inbox for an address on {domain} for an email from
+                Mailchimp with your verification code. Didn't get it? You can
+                close this and click "Verify Domain" on the domain list later
+                — the code stays valid.
+              </AlertDescription>
+            </Alert>
+
+            <div className="space-y-2">
+              <Label htmlFor="code">Verification Code</Label>
+              <Input
+                id="code"
+                placeholder="Enter the code from your email"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                disabled={isVerifying}
+                required
+              />
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <Button type="button" variant="outline" onClick={handleClose}>
+                I'll verify later
+              </Button>
+              <Button type="submit" disabled={isVerifying || !code}>
+                {isVerifying ? (
+                  <>
+                    <Loader className="mr-2 h-4 w-4 animate-spin" />
+                    Verifying...
+                  </>
+                ) : (
+                  "Verify"
+                )}
+              </Button>
+            </div>
+          </form>
         )}
       </DialogContent>
     </Dialog>

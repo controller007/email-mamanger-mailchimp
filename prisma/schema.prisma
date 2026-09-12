@@ -79,7 +79,7 @@ model Domain {
   domain            String   @unique
   status            String   @default("pending") // pending | verified | failed
   region            String   @default("us-east-1")
-  mailchimpDomainId String?  @unique // Mandrill sending domain name (same as `domain`, kept for parity with old resendId)
+  mailchimpDomainId String?  @unique // Mailchimp Marketing verified-domain id (from POST /verified-domains)
   userId            String   @db.ObjectId
   trackingSubdomain String?
   trackingStatus    String?

@@ -111,97 +111,14 @@ export async function getMessageInfo(
   }
 }
 
-// ── Sending domains ──────────────────────────────────────────────────────────
-// Mandrill verifies sending domains via SPF/DKIM DNS records (checked on demand)
-// rather than a fixed one-time DNS record set like Resend. `checkDomain` returns
-// the current SPF/DKIM record values + validity so we can render them the same
-// way the app already renders Resend's DNS record table.
-
-export interface MandrillDomainCheck {
-  domain: string;
-  created_at?: string;
-  last_tested_at?: string | null;
-  spf: { valid: boolean; valid_after?: string | null; error?: string | null };
-  dkim: { valid: boolean; valid_after?: string | null; error?: string | null };
-  verified_at: string | null;
-  valid_signing: boolean;
-}
-
-// Mandrill's real method names are flat (not nested REST paths) —
-// /senders/add-domain, /senders/check-domain, /senders/verify-domain,
-// /senders/domains, /senders/delete-domain. Using the nested
-// /senders/domains/add.json style (an earlier version of this file) fails
-// with a Mandrill "Unknown method" error since that path doesn't exist.
-export async function addDomain(domain: string): Promise<MandrillDomainCheck> {
-  return mandrillFetch<MandrillDomainCheck>("/senders/add-domain.json", {
-    domain,
-  });
-}
-
-export async function checkDomain(
-  domain: string,
-): Promise<MandrillDomainCheck> {
-  return mandrillFetch<MandrillDomainCheck>("/senders/check-domain.json", {
-    domain,
-  });
-}
-
-/**
- * Sends a verification email to `<mailbox>@<domain>` (e.g. mailbox="admin")
- * to confirm ownership of the domain. This is a separate step from
- * checkDomain's SPF/DKIM check — Mandrill requires it before a domain can
- * be used to sign outgoing DKIM as fully "verified".
- */
-export async function verifyDomainOwnership(
-  domain: string,
-  mailbox: string,
-): Promise<{ status: string; domain: string; email: string }> {
-  return mandrillFetch("/senders/verify-domain.json", { domain, mailbox });
-}
-
-export async function listDomains(): Promise<MandrillDomainCheck[]> {
-  return mandrillFetch<MandrillDomainCheck[]>("/senders/domains.json");
-}
-
-export async function deleteDomain(domain: string): Promise<void> {
-  await mandrillFetch("/senders/delete-domain.json", { domain });
-}
-
-export const MANDRILL_DASHBOARD_SENDING_DOMAINS_URL =
-  "https://mandrillapp.com/settings/sending-domains";
-
-/**
- * Builds the SPF/DKIM TXT records a user must add at their DNS provider,
- * in the same {type, name, value} shape the existing DnsRecordsDisplay
- * component expects (previously fed by Resend's `records` array).
- *
- * SPF is a fixed, documented value — safe to show verbatim. DKIM is NOT:
- * Mandrill generates a unique per-domain public key that its API never
- * returns (add-domain/check-domain only report validity, not the key
- * itself) — it's only visible in the Mandrill dashboard. Marking this row
- * `dashboardOnly` so the UI links out instead of rendering a fake,
- * copy-pasteable value that would never actually validate.
- */
-export function buildDnsRecords(domain: string) {
-  return [
-    {
-      type: "TXT",
-      name: "@",
-      value: "v=spf1 include:spf.mandrillapp.com ?all",
-      record: "SPF",
-    },
-    {
-      type: "TXT",
-      name: `mandrill._domainkey.${domain}`,
-      value: "",
-      record: "DKIM",
-      dashboardOnly: true,
-      dashboardUrl: MANDRILL_DASHBOARD_SENDING_DOMAINS_URL,
-    },
-  ];
-}
-
 // ── Webhooks ─────────────────────────────────────────────────────────────────
+//
+// Note: domain add/verify for this app is handled entirely through Mailchimp
+// Marketing's /verified-domains API (see mailchimp-marketing-client.ts) —
+// used as the single source of truth for both send modes rather than also
+// wiring Mandrill's separate senders/*-domain flow. Sending via Mandrill
+// itself doesn't require any domain to be "verified" in our own DB; that
+// status is purely an app-level gate before a Sender can be created.
 
 export async function listWebhooks(): Promise<any[]> {
   return mandrillFetch<any[]>("/webhooks/list.json");
@@ -214,12 +131,6 @@ export async function addWebhook(url: string, events: string[]): Promise<any> {
 export const mailchimpTransactional = {
   sendMessage,
   getMessageInfo,
-  addDomain,
-  checkDomain,
-  verifyDomainOwnership,
-  listDomains,
-  deleteDomain,
-  buildDnsRecords,
   listWebhooks,
   addWebhook,
 };

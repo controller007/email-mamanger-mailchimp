@@ -4,40 +4,17 @@ import { revalidatePath } from "next/cache";
 import { requireAuth } from "@/app/_lib/auth/session";
 import prisma from "@/app/_lib/db/prisma";
 import {
-  addDomain as mandrillAddDomain,
-  checkDomain as mandrillCheckDomain,
-  deleteDomain as mandrillDeleteDomain,
-  buildDnsRecords,
-} from "@/app/_lib/email/mailchimp-transactional-client";
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-interface DomainDnsRecord {
-  record: string;
-  name: string;
-  value: string;
-  type: string;
-  priority?: number;
-  ttl?: string;
-  status?: string;
-}
-
-function recordsFromCheck(domainName: string, check: Awaited<ReturnType<typeof mandrillCheckDomain>>): DomainDnsRecord[] {
-  const base = buildDnsRecords(domainName);
-  return base.map((r) => ({
-    ...r,
-    status:
-      r.record === "SPF"
-        ? check.spf?.valid
-          ? "verified"
-          : "pending"
-        : check.dkim?.valid
-          ? "verified"
-          : "pending",
-  }));
-}
+  addVerifiedDomain,
+  verifyVerifiedDomain,
+  deleteVerifiedDomain,
+} from "@/app/_lib/email/mailchimp-marketing-client";
 
 // ── createDomain ──────────────────────────────────────────────────────────────
+//
+// Domain authentication runs entirely through Mailchimp Marketing's
+// /verified-domains API (used as the single source of truth for both send
+// modes). Adding a domain here makes Mailchimp email a verification code to
+// an address on that domain — there's no DNS record step for this method.
 
 export async function createDomain(domainName: string) {
   try {
@@ -50,16 +27,16 @@ export async function createDomain(domainName: string) {
       return { success: false, error: "Domain already exists in the system" };
     }
 
-    let check;
+    let mcDomain;
     try {
-      check = await mandrillAddDomain(domainName);
+      mcDomain = await addVerifiedDomain(domainName);
     } catch (error) {
       return {
         success: false,
         error:
           error instanceof Error
             ? error.message
-            : "Failed to add domain in Mailchimp Transactional",
+            : "Failed to add domain in Mailchimp Marketing",
       };
     }
 
@@ -67,7 +44,7 @@ export async function createDomain(domainName: string) {
       data: {
         domain: domainName,
         status: "pending",
-        mailchimpDomainId: domainName,
+        mailchimpDomainId: String(mcDomain.id),
         userId: user.id,
       },
     });
@@ -80,7 +57,6 @@ export async function createDomain(domainName: string) {
         id: domain.id,
         domain: domain.domain,
         status: domain.status,
-        records: recordsFromCheck(domainName, check),
       },
     };
   } catch (error) {
@@ -91,11 +67,11 @@ export async function createDomain(domainName: string) {
 
 // ── verifyDomain ──────────────────────────────────────────────────────────────
 //
-// Mailchimp Transactional verifies sending domains by checking SPF/DKIM DNS
-// records on demand (no one-time verification token like Resend) — so
-// "verify" here just re-runs the check and persists whichever status it finds.
+// Mailchimp Marketing verifies domain ownership via a one-time code emailed
+// when the domain was added — the user reads that email and submits the code
+// here, rather than us polling any DNS state.
 
-export async function verifyDomain(domainId: string) {
+export async function verifyDomain(domainId: string, code: string) {
   try {
     const user = await requireAuth();
 
@@ -103,13 +79,17 @@ export async function verifyDomain(domainId: string) {
       where: { id: domainId, userId: user.id },
     });
 
-    if (!domain || !domain.mailchimpDomainId) {
+    if (!domain) {
       return { success: false, error: "Domain not found" };
     }
 
-    let check;
+    if (!code?.trim()) {
+      return { success: false, error: "Enter the verification code from your email" };
+    }
+
+    let result;
     try {
-      check = await mandrillCheckDomain(domain.mailchimpDomainId);
+      result = await verifyVerifiedDomain(domain.domain, code.trim());
     } catch (error) {
       return {
         success: false,
@@ -117,7 +97,7 @@ export async function verifyDomain(domainId: string) {
       };
     }
 
-    const status = check.spf?.valid && check.dkim?.valid ? "verified" : "pending";
+    const status = result.verified ? "verified" : "pending";
 
     await prisma.domain.update({
       where: { id: domainId },
@@ -127,50 +107,16 @@ export async function verifyDomain(domainId: string) {
     revalidatePath("/");
 
     return {
-      success: true,
+      success: status === "verified",
       status,
       message:
         status === "verified"
           ? "Domain verified successfully!"
-          : "Domain not yet verified. Please check your DNS records and try again.",
+          : "That code didn't verify the domain. Double-check it and try again.",
     };
   } catch (error) {
     console.error("Verify domain error:", error);
     return { success: false, error: "Verification failed" };
-  }
-}
-
-// ── getDomainRecords ──────────────────────────────────────────────────────────
-
-export async function getDomainRecords(domainId: string) {
-  try {
-    const user = await requireAuth();
-
-    const domain = await prisma.domain.findFirst({
-      where: { id: domainId, userId: user.id },
-    });
-
-    if (!domain || !domain.mailchimpDomainId) {
-      return { success: false, error: "Domain not found" };
-    }
-
-    let check;
-    try {
-      check = await mandrillCheckDomain(domain.mailchimpDomainId);
-    } catch {
-      return { success: false, error: "Failed to fetch domain records" };
-    }
-
-    const status = check.spf?.valid && check.dkim?.valid ? "verified" : "pending";
-
-    return {
-      success: true,
-      records: recordsFromCheck(domain.domain, check),
-      status,
-    };
-  } catch (error) {
-    console.error("Get domain records error:", error);
-    return { success: false, error: "Failed to fetch records" };
   }
 }
 
@@ -343,9 +289,9 @@ export async function deleteDomain(domainId: string) {
 
     if (domain.mailchimpDomainId) {
       try {
-        await mandrillDeleteDomain(domain.mailchimpDomainId);
+        await deleteVerifiedDomain(domain.domain);
       } catch (error) {
-        console.error("Failed to delete Mailchimp Transactional domain:", error);
+        console.error("Failed to delete Mailchimp Marketing verified domain:", error);
       }
     }
 

@@ -164,6 +164,57 @@ export async function sendCampaign(campaignId: string): Promise<void> {
   await mcFetch(`/campaigns/${campaignId}/actions/send`, { method: "POST" });
 }
 
+// ── Verified (sending) domains ───────────────────────────────────────────────
+//
+// Domain authentication for Marketing campaigns/audiences has nothing to do
+// with Mandrill's sending-domain SPF/DKIM check — it's a separate Marketing
+// API resource. Adding a domain here triggers Mailchimp to email a
+// verification code to an address on that domain; verifyVerifiedDomain
+// completes it by submitting that code back.
+
+export interface VerifiedDomain {
+  id: string;
+  domain: string;
+  create_time: string;
+  verified: boolean;
+}
+
+export async function addVerifiedDomain(
+  domain: string,
+): Promise<VerifiedDomain> {
+  return mcFetch("/verified-domains", {
+    method: "POST",
+    body: JSON.stringify({ domain }),
+  });
+}
+
+export async function getVerifiedDomain(
+  domain: string,
+): Promise<VerifiedDomain> {
+  return mcFetch(`/verified-domains/${encodeURIComponent(domain)}`);
+}
+
+export async function listVerifiedDomains(): Promise<VerifiedDomain[]> {
+  const res = await mcFetch<{ domains: VerifiedDomain[] }>("/verified-domains");
+  return res.domains ?? [];
+}
+
+export async function verifyVerifiedDomain(
+  domain: string,
+  code: string,
+): Promise<VerifiedDomain> {
+  return mcFetch(`/verified-domains/${encodeURIComponent(domain)}/actions/verify`, {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function deleteVerifiedDomain(domain: string): Promise<void> {
+  await mcFetch(`/verified-domains/${encodeURIComponent(domain)}`, {
+    method: "DELETE",
+  });
+}
+
 export interface CampaignReportSummary {
   emails_sent: number;
   opens: { opens_total: number; unique_opens: number };
@@ -276,4 +327,9 @@ export const mailchimpMarketing = {
   lastEventFromActivity,
   deleteCampaign,
   addListWebhook,
+  addVerifiedDomain,
+  getVerifiedDomain,
+  listVerifiedDomains,
+  verifyVerifiedDomain,
+  deleteVerifiedDomain,
 };
