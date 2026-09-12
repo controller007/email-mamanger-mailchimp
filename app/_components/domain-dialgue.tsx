@@ -17,6 +17,30 @@ import { Label } from "@/app/_components/ui/label";
 import { Alert, AlertDescription } from "@/app/_components/ui/alert";
 import { createDomain, verifyDomain } from "../(dashboard)/domains/actions";
 
+// Mailchimp Marketing rejects verification emails on free/consumer webmail
+// providers ("X is a free e-mail provider and cannot be used as a verified
+// domain") — confirmed live 2026-09-12 with protonmail.com. This list is a
+// best-effort client-side heads-up, not exhaustive; the server-side error
+// (surfaced verbatim from Mailchimp) is still the source of truth.
+const FREE_EMAIL_PROVIDERS = [
+  "gmail.com",
+  "yahoo.com",
+  "outlook.com",
+  "hotmail.com",
+  "live.com",
+  "icloud.com",
+  "protonmail.com",
+  "proton.me",
+  "aol.com",
+  "mail.com",
+  "gmx.com",
+];
+
+function isFreeEmailProvider(email: string): boolean {
+  const domainPart = email.split("@")[1]?.toLowerCase().trim();
+  return !!domainPart && FREE_EMAIL_PROVIDERS.includes(domainPart);
+}
+
 export function AddDomainDialog() {
   const [open, setOpen] = useState(false);
   const [domain, setDomain] = useState("");
@@ -30,6 +54,8 @@ export function AddDomainDialog() {
   const [verified, setVerified] = useState(false);
   const [copied, setCopied] = useState(false);
   const router = useRouter();
+
+  const emailIsFreeProvider = isFreeEmailProvider(email);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -158,11 +184,23 @@ export function AddDomainDialog() {
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={isLoading}
                 required
+                className={emailIsFreeProvider ? "border-amber-400 focus-visible:ring-amber-400" : undefined}
               />
-              <p className="text-xs text-gray-500">
-                Mailchimp Marketing sends a verification code to this address
-                — it doesn't need to be @{domain || "yourdomain.com"}.
-              </p>
+              {emailIsFreeProvider ? (
+                <p className="text-xs text-amber-600 font-medium">
+                  Mailchimp doesn't accept free email providers (Gmail,
+                  Yahoo, Outlook, Proton, etc.) for domain verification — use
+                  a work address or one @{domain || "yourdomain.com"}.
+                </p>
+              ) : (
+                <p className="text-xs text-gray-500">
+                  Mailchimp Marketing sends a verification code to this
+                  address. It doesn't need to be @
+                  {domain || "yourdomain.com"}, but it can't be a free
+                  provider like Gmail, Yahoo, or Outlook — Mailchimp rejects
+                  those for domain verification.
+                </p>
+              )}
             </div>
 
             <div className="flex justify-end gap-3">
@@ -174,7 +212,10 @@ export function AddDomainDialog() {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={isLoading || !domain || !email}>
+              <Button
+                type="submit"
+                disabled={isLoading || !domain || !email || emailIsFreeProvider}
+              >
                 {isLoading ? (
                   <>
                     <Loader className="mr-2 h-4 w-4 animate-spin" />
