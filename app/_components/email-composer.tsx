@@ -52,7 +52,6 @@ import {
 } from "lucide-react";
 import { emailComposeSchema } from "@/app/_lib/validations/email";
 import { MultiListSelector } from "@/app/_components/multi-list-selector";
-import { SendIntervalModal } from "@/app/_components/send-interval-modal";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Domain {
@@ -487,17 +486,6 @@ export function EmailComposer({
     useState<SelectedTemplate | null>(null);
   const [templatePickerKey, setTemplatePickerKey] = useState(0);
 
-  // Global send interval (seconds) — loaded from API
-  const [intervalSeconds, setIntervalSeconds] = useState<number | null>(null);
-  const [showIntervalModal, setShowIntervalModal] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/user/send-interval")
-      .then((r) => r.json())
-      .then((d) => setIntervalSeconds(d.sendIntervalSeconds ?? 0))
-      .catch(() => setIntervalSeconds(0));
-  }, []);
-
   // Derive senders from first selected list's domain
   useEffect(() => {
     const firstList = contactLists.find((l) => l.id === selectedListIds[0]);
@@ -577,10 +565,11 @@ export function EmailComposer({
       });
       const result = await response.json();
       if (!response.ok)
-        throw new Error(result.error || "Failed to queue campaign");
+        throw new Error(result.error || "Failed to send campaign");
 
       setSuccess(
-        `Campaign queued for ${result.queued} list${result.queued !== 1 ? "s" : ""} (${totalRecipients.toLocaleString()} contacts). Emails are being sent in the background — you can close this tab.`,
+        result.message ||
+          `Sent to ${result.sent ?? totalRecipients} recipient${(result.sent ?? totalRecipients) !== 1 ? "s" : ""} across ${result.queued} list${result.queued !== 1 ? "s" : ""}.`,
       );
       setSubject("");
       setBody("");
@@ -889,38 +878,6 @@ export function EmailComposer({
                   )}
                 </div>
 
-                {/* ── Send interval info banner ─────────────────── */}
-                {intervalSeconds !== null && intervalSeconds > 0 && (
-                  <div className="flex items-center gap-3 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl">
-                    <Timer className="h-4 w-4 text-amber-600 shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-semibold text-amber-800">
-                        Staggered delivery active
-                      </p>
-                      <p className="text-xs text-amber-600 mt-0.5">
-                        {intervalSeconds}s delay between each email.
-                        {totalRecipients > 0 && (
-                          <>
-                            {" "}
-                            Estimated total time: ~
-                            {Math.round(
-                              (totalRecipients * intervalSeconds) / 60,
-                            )}{" "}
-                            min.
-                          </>
-                        )}{" "}
-                        You can close this tab once you hit send.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setShowIntervalModal(true)}
-                      className="text-xs text-amber-700 underline shrink-0 hover:text-amber-900"
-                    >
-                      Change
-                    </button>
-                  </div>
-                )}
                 {/* ── Actions ───────────────────────────────────── */}
                 <div className="flex items-center justify-between pt-2 flex-wrap gap-3">
                   <Button
@@ -940,7 +897,7 @@ export function EmailComposer({
                     {isLoading ? (
                       <>
                         <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
-                        Queuing…
+                        Sending…
                       </>
                     ) : (
                       <>
@@ -962,46 +919,6 @@ export function EmailComposer({
 
         {/* ── Right Sidebar ──────────────────────────────────────────── */}
         <div className="space-y-4">
-          {/* Send interval setting */}
-          <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-5">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Clock className="h-4 w-4 text-blue-600" />
-                <h3 className="text-sm font-bold text-gray-900">
-                  Send Interval
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowIntervalModal(true)}
-                className="text-xs text-blue-500 hover:text-blue-700 hover:underline"
-              >
-                Edit
-              </button>
-            </div>
-            {intervalSeconds === null ? (
-              <p className="text-xs text-gray-400">Loading…</p>
-            ) : (
-              <div className="flex items-center gap-2">
-                <div className="h-9 w-9 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0">
-                  <Timer className="h-4 w-4 text-blue-600" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-gray-900">
-                    {intervalSeconds === 0
-                      ? "No delay"
-                      : `${intervalSeconds}s between emails`}
-                  </p>
-                  <p className="text-xs text-gray-400">
-                    {intervalSeconds === 0
-                      ? "All emails fire as fast as possible"
-                      : "Emails stagger in background"}
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-
           {/* Dynamic Variables */}
           <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-5">
             <div className="flex items-center gap-2 mb-3">
@@ -1122,14 +1039,6 @@ export function EmailComposer({
           senderName={selectedSender.name}
           senderEmail={selectedSender.email}
           preheader={preheader}
-        />
-      )}
-      {intervalSeconds !== null && (
-        <SendIntervalModal
-          open={showIntervalModal}
-          onClose={() => setShowIntervalModal(false)}
-          currentInterval={intervalSeconds}
-          onSaved={(newVal) => setIntervalSeconds(newVal)}
         />
       )}
     </>

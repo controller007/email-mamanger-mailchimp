@@ -93,31 +93,29 @@ export async function deleteAudience(audienceId: string): Promise<void> {
  * Replaces the audience's membership with exactly `emails` via the batch
  * operations endpoint (upsert each member, subscribed).
  */
+/**
+ * Adds/updates members one at a time via the direct member-upsert endpoint
+ * rather than /batches. /batches is asynchronous — it queues the operations
+ * and returns immediately, before Mailchimp has actually applied them —
+ * so a campaign created right after a batch call can fail with "recipients
+ * not ready" because the audience hasn't finished updating yet. The direct
+ * PUT is synchronous: it only returns once that member is actually saved.
+ */
 export async function syncAudienceMembers(
   audienceId: string,
   contacts: Array<{ email: string; firstName?: string | null; lastName?: string | null }>,
 ): Promise<void> {
-  if (contacts.length === 0) return;
-
-  const operations = contacts.map((c) => ({
-    method: "PUT",
-    path: `/lists/${audienceId}/members/${md5Lower(c.email)}`,
-    body: JSON.stringify({
-      email_address: c.email,
-      status_if_new: "subscribed",
-      merge_fields: {
-        FNAME: c.firstName || "",
-        LNAME: c.lastName || "",
-      },
-    }),
-  }));
-
-  // Mailchimp batch endpoint caps at 500 ops/request
-  const CHUNK = 500;
-  for (let i = 0; i < operations.length; i += CHUNK) {
-    await mcFetch(`/batches`, {
-      method: "POST",
-      body: JSON.stringify({ operations: operations.slice(i, i + CHUNK) }),
+  for (const c of contacts) {
+    await mcFetch(`/lists/${audienceId}/members/${md5Lower(c.email)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        email_address: c.email,
+        status_if_new: "subscribed",
+        merge_fields: {
+          FNAME: c.firstName || "",
+          LNAME: c.lastName || "",
+        },
+      }),
     });
   }
 }
@@ -167,8 +165,28 @@ export async function setCampaignContent(
   });
 }
 
+const SEND_READY_RETRY_DELAYS_MS = [3000, 6000, 10000];
+
+/**
+ * Mailchimp's recipient/segment index for an audience can lag a few
+ * seconds behind a just-completed member add — sending immediately after
+ * can fail with "Your Campaign is not ready to send. recipients not
+ * ready" (send-checklist reports it as "Your advanced segment is empty")
+ * even though the member and recipient_count are already correct. This
+ * is transient, so retry with backoff rather than failing the whole send.
+ */
 export async function sendCampaign(campaignId: string): Promise<void> {
-  await mcFetch(`/campaigns/${campaignId}/actions/send`, { method: "POST" });
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await mcFetch(`/campaigns/${campaignId}/actions/send`, { method: "POST" });
+      return;
+    } catch (err) {
+      const notReady =
+        err instanceof Error && /not ready to send|recipients not ready/i.test(err.message);
+      if (!notReady || attempt >= SEND_READY_RETRY_DELAYS_MS.length) throw err;
+      await new Promise((r) => setTimeout(r, SEND_READY_RETRY_DELAYS_MS[attempt]));
+    }
+  }
 }
 
 // ── Verified (sending) domains ───────────────────────────────────────────────

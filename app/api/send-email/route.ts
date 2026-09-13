@@ -2,7 +2,10 @@ import { type NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/app/_lib/auth/session";
 import { emailComposeSchema } from "@/app/_lib/validations/email";
 import prisma from "@/app/_lib/db/prisma";
-import { inngest } from "@/app/_lib/inngest/client";
+import {
+  sendTransactionalCampaign,
+  sendMarketingCampaign,
+} from "@/app/_lib/email/send-campaign";
 
 export async function POST(request: NextRequest) {
   try {
@@ -76,17 +79,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Load user's interval setting
-    const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
-      select: { sendIntervalSeconds: true },
-    });
-    const intervalSeconds = user?.sendIntervalSeconds ?? 0;
+    // ── Create one EmailHistory row per list, then send to each in turn ────────
+    const sendFn = sendMethod === "marketing" ? sendMarketingCampaign : sendTransactionalCampaign;
 
-    // ── Step 1: Create EmailHistory rows first (need real IDs for CampaignJob) ─
-    const emailHistoryIds: string[] = [];
-    for (const listId of contactListIds) {
-      const list = contactLists.find((l) => l.id === listId)!;
+    const results: Array<{ contactListId: string; emailHistoryId: string; sent: number; failed: number }> = [];
+
+    for (const list of contactLists) {
       const emailHistory = await prisma.emailHistory.create({
         data: {
           subject,
@@ -102,53 +100,50 @@ export async function POST(request: NextRequest) {
           sentCount: 0,
         },
       });
-      emailHistoryIds.push(emailHistory.id);
+
+      try {
+        const { sent, failed } = await sendFn({
+          contactListId: list.id,
+          emailHistoryId: emailHistory.id,
+          userId: session.user.id,
+          subject,
+          emailBody,
+          preheader: preheader || "",
+          senderName: sender.name,
+          senderEmail: sender.email,
+          appUrl: safeAppUrl,
+        });
+        results.push({ contactListId: list.id, emailHistoryId: emailHistory.id, sent, failed });
+      } catch (err) {
+        console.error(`Failed to send to list ${list.id}:`, err);
+        await prisma.emailHistory.update({
+          where: { id: emailHistory.id },
+          data: { status: "failed" },
+        });
+        results.push({ contactListId: list.id, emailHistoryId: emailHistory.id, sent: 0, failed: 0 });
+      }
     }
 
-    // ── Step 2: Create CampaignJob using the real first EmailHistory ID ────────
-    const campaignJob = await prisma.campaignJob.create({
-      data: {
-        userId: session.user.id,
-        emailHistoryId: emailHistoryIds[0], // real ObjectId now
-        status: "queued",
-        intervalSeconds,
-        totalContacts: 0,
-      },
-    });
-
-    // ── Step 3: Fire ONE Inngest event — all lists processed sequentially ──────
-    await inngest.send({
-      name:
-        sendMethod === "marketing"
-          ? ("campaign/send-marketing" as const)
-          : ("campaign/send" as const),
-      data: {
-        campaignJobId: campaignJob.id,
-        userId: session.user.id,
-        contactListIds,
-        emailHistoryIds,
-        senderId: sender.id,
-        subject,
-        emailBody,
-        preheader: preheader || "",
-        senderName: sender.name,
-        senderEmail: sender.email,
-        intervalSeconds,
-        appUrl: safeAppUrl,
-      },
-    });
+    const totalSent = results.reduce((sum, r) => sum + r.sent, 0);
+    const totalFailed = results.reduce((sum, r) => sum + r.failed, 0);
 
     return NextResponse.json({
       success: true,
-      campaignJobId: campaignJob.id,
-      emailHistoryIds,
-      queued: contactListIds.length,
-      message: `Campaign queued for ${contactListIds.length} list${contactListIds.length !== 1 ? "s" : ""}. Processing lists one at a time in the background.`,
+      emailHistoryIds: results.map((r) => r.emailHistoryId),
+      queued: contactLists.length,
+      sent: totalSent,
+      failed: totalFailed,
+      message: `Sent to ${totalSent} recipient${totalSent !== 1 ? "s" : ""} across ${contactLists.length} list${contactLists.length !== 1 ? "s" : ""}.`,
     });
   } catch (error) {
-    console.error("Error queuing campaign:", error);
+    console.error("Error sending campaign:", error);
     return NextResponse.json(
-      { error: "Internal server error" },
+      {
+        error:
+          error instanceof Error
+            ? `Failed to send campaign: ${error.message}`
+            : "Internal server error",
+      },
       { status: 500 },
     );
   }

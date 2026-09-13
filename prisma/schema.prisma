@@ -17,8 +17,6 @@ model User {
   lastName            String?
   image               String?
   blocked             Boolean  @default(false)
-  // ── New: global send interval in seconds (0 = no delay) ──────────────────
-  sendIntervalSeconds Int      @default(0)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -26,7 +24,6 @@ model User {
   emailHistory   EmailHistory[]
   suppressions   EmailSuppression[]
   emailTemplates EmailTemplate[]
-  campaignJobs   CampaignJob[]
 
   @@map("users")
 }
@@ -112,7 +109,7 @@ model EmailHistory {
   sendMethod        String                @default("transactional") // transactional | marketing
   status            String                @default("sent") // queued | sending | sent | failed
   batchIds          String[]
-  mailchimpCampaignId String?             @unique // set when sendMethod = "marketing"
+  mailchimpCampaignId String? // set when sendMethod = "marketing"; looked up via findFirst, doesn't need a unique index
   sentCount         Int                   @default(0)
   deliveredCount    Int                   @default(0)
   openedCount       Int                   @default(0)
@@ -189,23 +186,4 @@ model EmailTemplate {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("email_templates")
-}
-
-model CampaignJob {
-  id              String    @id @default(auto()) @map("_id") @db.ObjectId
-  userId          String    @db.ObjectId
-  emailHistoryId  String    @db.ObjectId
-  inngestRunId    String?
-  status          String    @default("queued")
-  totalContacts   Int       @default(0)
-  sentCount       Int       @default(0)
-  failedCount     Int       @default(0)
-  intervalSeconds Int       @default(0)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  completedAt     DateTime?
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("campaign_jobs")
 }
