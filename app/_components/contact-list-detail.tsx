@@ -63,13 +63,14 @@ import {
   applyMapping,
   chunkArray,
   isBadValidationResult,
-  splitContactsByExcludedDomains,
+  filterContactsByIncludeMode,
   ColumnMappingEditor,
   ContactsPreviewTable,
   InvalidRowsPanel,
   SplitBadge,
-  ExcludeDomainsControl,
+  IncludeDomainFilterControl,
   type ValidationResult,
+  type IncludeDomainMode,
 } from "./csv-import";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -485,9 +486,9 @@ function CsvImportDialog({
   const [csvRawRows, setCsvRawRows] = useState<string[][]>([]);
   const [columnMapping, setColumnMapping] = useState<ColumnMapping[]>([]);
   const [csvContactsRaw, setCsvContactsRaw] = useState<ParsedContact[]>([]);
-  const [excludedDomains, setExcludedDomains] = useState<string[]>([]);
+  const [includeMode, setIncludeMode] = useState<IncludeDomainMode>(null);
   const { kept: csvContacts, excluded: excludedCsvContacts } =
-    splitContactsByExcludedDomains(csvContactsRaw, excludedDomains);
+    filterContactsByIncludeMode(csvContactsRaw, includeMode);
   const [csvInvalidRows, setCsvInvalidRows] = useState<InvalidRow[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
@@ -727,7 +728,7 @@ function CsvImportDialog({
     setCsvRawRows([]);
     setColumnMapping([]);
     setCsvContactsRaw([]);
-    setExcludedDomains([]);
+    setIncludeMode(null);
     setCsvInvalidRows([]);
     setValidationResults([]);
     setValidateTotal(0);
@@ -901,12 +902,13 @@ function CsvImportDialog({
                 />
               )}
 
-              {/* Domain exclusion filter */}
+              {/* Include-only domain filter */}
               {csvContactsRaw.length > 0 && (
-                <ExcludeDomainsControl
-                  excludedDomains={excludedDomains}
-                  onChange={setExcludedDomains}
-                  excludedCount={excludedCsvContacts.length}
+                <IncludeDomainFilterControl
+                  mode={includeMode}
+                  onChange={setIncludeMode}
+                  keptCount={csvContacts.length}
+                  totalCount={csvContactsRaw.length}
                 />
               )}
 

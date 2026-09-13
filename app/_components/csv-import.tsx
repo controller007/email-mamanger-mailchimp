@@ -92,14 +92,14 @@ export interface InvalidRow {
 
 export const MAX_CONTACTS = 100;
 
-export const DEFAULT_EXCLUDED_DOMAIN_OPTIONS = [
-  "gmail.com",
-  "yahoo.com",
-  "outlook.com",
-  "hotmail.com",
-  "live.com",
-  "icloud.com",
-];
+// Include-only domain filter: "gmail" and "yahoo" keep just that provider's
+// addresses; "other" keeps everything EXCEPT gmail/yahoo. `null` means no
+// filter applied (everything kept) — this is a single-select control, not
+// independent toggles.
+export type IncludeDomainMode = "gmail" | "yahoo" | "other" | "custom" | null;
+
+export const GMAIL_DOMAIN = "gmail.com";
+export const YAHOO_DOMAIN = "yahoo.com";
 
 export const FIELD_OPTIONS: { value: FieldKey; label: string }[] = [
   { value: "email", label: "Email" },
@@ -216,38 +216,62 @@ export function chunkArray<T>(arr: T[], size: number): T[][] {
 }
 
 /**
- * Splits a flat list of email addresses into those kept vs. excluded based
- * on the domain (part after "@"), case-insensitive. Used by both the paste
- * and CSV import flows to let users drop specific extensions (gmail.com,
- * yahoo.com, custom company domains, etc.) from a list before it's saved.
+ * Splits a flat list of email addresses into those kept vs. dropped based on
+ * an include-only domain mode, case-insensitive. Used by both the paste and
+ * CSV import flows:
+ *   - null:     keep everything (no filter)
+ *   - "gmail":  keep only @gmail.com
+ *   - "yahoo":  keep only @yahoo.com
+ *   - "other":  keep everything EXCEPT @gmail.com and @yahoo.com
+ *   - "custom": keep only the given customDomain (bex only)
  */
-export function splitByExcludedDomains(
+export function filterByIncludeMode(
   emails: string[],
-  excludedDomains: string[],
+  mode: IncludeDomainMode,
+  customDomain?: string,
 ): { kept: string[]; excluded: string[] } {
-  if (excludedDomains.length === 0) return { kept: emails, excluded: [] };
-  const excludedSet = new Set(
-    excludedDomains.map((d) => d.trim().toLowerCase()),
-  );
+  if (!mode) return { kept: emails, excluded: [] };
+
+  const matchesGmail = (d: string) => d === GMAIL_DOMAIN;
+  const matchesYahoo = (d: string) => d === YAHOO_DOMAIN;
+  const customLower = customDomain?.trim().toLowerCase();
+
+  const isKept = (domain: string): boolean => {
+    switch (mode) {
+      case "gmail":
+        return matchesGmail(domain);
+      case "yahoo":
+        return matchesYahoo(domain);
+      case "other":
+        return !matchesGmail(domain) && !matchesYahoo(domain);
+      case "custom":
+        return !!customLower && domain === customLower;
+      default:
+        return true;
+    }
+  };
+
   const kept: string[] = [];
   const excluded: string[] = [];
   for (const email of emails) {
     const domain = email.split("@")[1]?.toLowerCase();
-    if (domain && excludedSet.has(domain)) excluded.push(email);
-    else kept.push(email);
+    if (domain && isKept(domain)) kept.push(email);
+    else excluded.push(email);
   }
   return { kept, excluded };
 }
 
-/** Same as `splitByExcludedDomains` but operates on ParsedContact rows. */
-export function splitContactsByExcludedDomains(
+/** Same as `filterByIncludeMode` but operates on ParsedContact rows. */
+export function filterContactsByIncludeMode(
   contacts: ParsedContact[],
-  excludedDomains: string[],
+  mode: IncludeDomainMode,
+  customDomain?: string,
 ): { kept: ParsedContact[]; excluded: ParsedContact[] } {
-  if (excludedDomains.length === 0) return { kept: contacts, excluded: [] };
-  const { kept: keptEmails } = splitByExcludedDomains(
+  if (!mode) return { kept: contacts, excluded: [] };
+  const { kept: keptEmails } = filterByIncludeMode(
     contacts.map((c) => c.email),
-    excludedDomains,
+    mode,
+    customDomain,
   );
   const keptSet = new Set(keptEmails);
   return {
@@ -956,109 +980,93 @@ export function InvalidRowsPanel({
 }
 
 /**
- * ExcludeDomainsControl
+ * IncludeDomainFilterControl
  *
- * Lets the user pick predefined email extensions (gmail.com, yahoo.com, …)
- * plus arbitrary custom domains to strip out of a contact list — applies
- * identically to the paste and CSV import flows via
- * splitByExcludedDomains / splitContactsByExcludedDomains.
+ * Single-select include-only filter: "Gmail only" / "Yahoo only" / "All
+ * other extensions" (everything except gmail+yahoo). Clicking the active
+ * option again clears the filter. `allowCustom` (bex only) adds a 4th
+ * custom-domain option — a paid feature on the other products, so they
+ * don't render it.
  */
-export function ExcludeDomainsControl({
-  excludedDomains,
+export function IncludeDomainFilterControl({
+  mode,
   onChange,
-  excludedCount,
+  customDomain,
+  onCustomDomainChange,
+  allowCustom = false,
+  keptCount,
+  totalCount,
 }: {
-  excludedDomains: string[];
-  onChange: (domains: string[]) => void;
-  excludedCount?: number;
+  mode: IncludeDomainMode;
+  onChange: (mode: IncludeDomainMode) => void;
+  customDomain?: string;
+  onCustomDomainChange?: (domain: string) => void;
+  allowCustom?: boolean;
+  keptCount?: number;
+  totalCount?: number;
 }) {
-  const [customInput, setCustomInput] = useState("");
-
-  const toggle = (domain: string) => {
-    onChange(
-      excludedDomains.includes(domain)
-        ? excludedDomains.filter((d) => d !== domain)
-        : [...excludedDomains, domain],
-    );
+  const select = (next: Exclude<IncludeDomainMode, null>) => {
+    onChange(mode === next ? null : next);
   };
 
-  const addCustom = () => {
-    const d = customInput.trim().toLowerCase().replace(/^@/, "");
-    if (d && !excludedDomains.includes(d)) onChange([...excludedDomains, d]);
-    setCustomInput("");
-  };
-
-  const customDomains = excludedDomains.filter(
-    (d) => !DEFAULT_EXCLUDED_DOMAIN_OPTIONS.includes(d),
-  );
+  const showCount =
+    mode && typeof keptCount === "number" && typeof totalCount === "number";
 
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <Label className="flex items-center gap-1.5 text-gray-700">
-          <ShieldX className="h-3.5 w-3.5" /> Exclude email domains
+          <ShieldX className="h-3.5 w-3.5" /> Filter by email extension
         </Label>
-        {!!excludedCount && (
+        {showCount && (
           <span className="text-xs text-amber-600 font-medium">
-            {excludedCount} email{excludedCount !== 1 ? "s" : ""} excluded
+            {keptCount} of {totalCount} kept
           </span>
         )}
       </div>
       <div className="flex flex-wrap gap-1.5">
-        {DEFAULT_EXCLUDED_DOMAIN_OPTIONS.map((domain) => (
+        {(
+          [
+            { key: "gmail" as const, label: "Include only Gmail" },
+            { key: "yahoo" as const, label: "Include only Yahoo" },
+            { key: "other" as const, label: "Include all other extensions" },
+          ]
+        ).map((opt) => (
           <button
-            key={domain}
+            key={opt.key}
             type="button"
-            onClick={() => toggle(domain)}
+            onClick={() => select(opt.key)}
             className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-              excludedDomains.includes(domain)
-                ? "bg-red-50 border-red-300 text-red-700"
+              mode === opt.key
+                ? "bg-blue-50 border-blue-300 text-blue-700"
                 : "bg-gray-50 border-gray-200 text-gray-600 hover:border-gray-300"
             }`}
           >
-            {domain}
+            {opt.label}
           </button>
         ))}
-        {customDomains.map((domain) => (
-          <Badge
-            key={domain}
-            variant="destructive"
-            className="text-xs flex items-center gap-1 pr-0.5"
+        {allowCustom && (
+          <button
+            type="button"
+            onClick={() => select("custom")}
+            className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+              mode === "custom"
+                ? "bg-blue-50 border-blue-300 text-blue-700"
+                : "bg-gray-50 border-gray-200 text-gray-600 hover:border-gray-300"
+            }`}
           >
-            {domain}
-            <button
-              type="button"
-              onClick={() => toggle(domain)}
-              className="ml-0.5 hover:bg-red-700 rounded-full p-0.5"
-            >
-              <X className="h-2.5 w-2.5" />
-            </button>
-          </Badge>
-        ))}
+            Include only custom domain
+          </button>
+        )}
       </div>
-      <div className="flex items-center gap-1.5">
+      {allowCustom && mode === "custom" && (
         <Input
-          placeholder="Add a custom domain, e.g. mycompany.com"
-          value={customInput}
-          onChange={(e) => setCustomInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              addCustom();
-            }
-          }}
-          className="h-7 text-xs rounded-lg"
+          placeholder="e.g. mycompany.com"
+          value={customDomain ?? ""}
+          onChange={(e) => onCustomDomainChange?.(e.target.value)}
+          className="h-7 text-xs rounded-lg max-w-xs"
         />
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs shrink-0"
-          onClick={addCustom}
-        >
-          Add
-        </Button>
-      </div>
+      )}
     </div>
   );
 }

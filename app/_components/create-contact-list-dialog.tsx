@@ -60,6 +60,7 @@ import {
   type ColumnMapping,
   type FieldKey,
   type ValidationResult,
+  type IncludeDomainMode,
   // Helpers
   MAX_CONTACTS,
   generateBaseName,
@@ -69,14 +70,14 @@ import {
   chunkArray,
   isValidEmail,
   isBadValidationResult,
-  splitContactsByExcludedDomains,
+  filterContactsByIncludeMode,
   // UI
   ColumnMappingEditor,
   ContactsPreviewTable,
   InvalidRowsPanel,
   SplitBadge,
   ValidationBadge,
-  ExcludeDomainsControl,
+  IncludeDomainFilterControl,
 } from "./csv-import";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -241,15 +242,16 @@ export function CreateContactListDialog({
   const [csvValidateTotal, setCsvValidateTotal] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // ── Domain exclusion filter (applies to both paste + CSV) ────────────────────
-  const [excludedDomains, setExcludedDomains] = useState<string[]>([]);
+  // ── Include-only domain filter (applies to both paste + CSV) ─────────────────
+  const [includeMode, setIncludeMode] = useState<IncludeDomainMode>(null);
+  const [customIncludeDomain, setCustomIncludeDomain] = useState("");
 
   const rawActiveContacts: ParsedContact[] =
     activeTab === "paste"
       ? validEmails.map((email) => ({ email }))
       : csvContacts;
   const { kept: activeContacts, excluded: excludedContacts } =
-    splitContactsByExcludedDomains(rawActiveContacts, excludedDomains);
+    filterContactsByIncludeMode(rawActiveContacts, includeMode, customIncludeDomain);
   const contactCount = activeContacts.length;
   const needsSplitting = contactCount > MAX_CONTACTS;
   const batchCount = needsSplitting
@@ -600,7 +602,8 @@ export function CreateContactListDialog({
     setCsvValidateTotal(0);
     setActiveTab("paste");
     setBatchProgress(null);
-    setExcludedDomains([]);
+    setIncludeMode(null);
+    setCustomIncludeDomain("");
   };
 
   const canSubmit =
@@ -747,11 +750,14 @@ export function CreateContactListDialog({
               </Alert>
             )} */}
 
-            {/* Domain exclusion filter — applies to both paste + CSV */}
-            <ExcludeDomainsControl
-              excludedDomains={excludedDomains}
-              onChange={setExcludedDomains}
-              excludedCount={excludedContacts.length}
+            {/* Include-only domain filter — applies to both paste + CSV */}
+            <IncludeDomainFilterControl
+              mode={includeMode}
+              onChange={setIncludeMode}
+              customDomain={customIncludeDomain}
+              onCustomDomainChange={setCustomIncludeDomain}
+              keptCount={activeContacts.length}
+              totalCount={rawActiveContacts.length}
             />
 
             {/* Tabs */}
