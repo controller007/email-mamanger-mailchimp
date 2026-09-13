@@ -92,14 +92,13 @@ export interface InvalidRow {
 
 export const MAX_CONTACTS = 100;
 
-// Include-only domain filter: "gmail" and "yahoo" keep just that provider's
-// addresses; "other" keeps everything EXCEPT gmail/yahoo. `null` means no
-// filter applied (everything kept) — this is a single-select control, not
-// independent toggles.
-export type IncludeDomainMode = "gmail" | "yahoo" | "other" | "custom" | null;
+// Include-only domain filter: "gmail" keeps just @gmail.com addresses;
+// "other" keeps everything EXCEPT gmail. `null` means no filter applied
+// (everything kept) — this is a single-select control, not independent
+// toggles.
+export type IncludeDomainMode = "gmail" | "other" | "custom" | null;
 
 export const GMAIL_DOMAIN = "gmail.com";
-export const YAHOO_DOMAIN = "yahoo.com";
 
 export const FIELD_OPTIONS: { value: FieldKey; label: string }[] = [
   { value: "email", label: "Email" },
@@ -221,8 +220,7 @@ export function chunkArray<T>(arr: T[], size: number): T[][] {
  * CSV import flows:
  *   - null:     keep everything (no filter)
  *   - "gmail":  keep only @gmail.com
- *   - "yahoo":  keep only @yahoo.com
- *   - "other":  keep everything EXCEPT @gmail.com and @yahoo.com
+ *   - "other":  keep everything EXCEPT @gmail.com
  *   - "custom": keep only the given customDomain (bex only)
  */
 export function filterByIncludeMode(
@@ -233,17 +231,14 @@ export function filterByIncludeMode(
   if (!mode) return { kept: emails, excluded: [] };
 
   const matchesGmail = (d: string) => d === GMAIL_DOMAIN;
-  const matchesYahoo = (d: string) => d === YAHOO_DOMAIN;
   const customLower = customDomain?.trim().toLowerCase();
 
   const isKept = (domain: string): boolean => {
     switch (mode) {
       case "gmail":
         return matchesGmail(domain);
-      case "yahoo":
-        return matchesYahoo(domain);
       case "other":
-        return !matchesGmail(domain) && !matchesYahoo(domain);
+        return !matchesGmail(domain);
       case "custom":
         return !!customLower && domain === customLower;
       default:
@@ -982,11 +977,10 @@ export function InvalidRowsPanel({
 /**
  * IncludeDomainFilterControl
  *
- * Single-select include-only filter: "Gmail only" / "Yahoo only" / "All
- * other extensions" (everything except gmail+yahoo). Clicking the active
- * option again clears the filter. `allowCustom` (bex only) adds a 4th
- * custom-domain option — a paid feature on the other products, so they
- * don't render it.
+ * Single-select include-only filter: "Gmail only" / "All other extensions"
+ * (everything except gmail). Clicking the active option again clears the
+ * filter. `allowCustom` (bex only) adds a 3rd custom-domain option — a paid
+ * feature on the other products, so they don't render it.
  */
 export function IncludeDomainFilterControl({
   mode,
@@ -1028,7 +1022,6 @@ export function IncludeDomainFilterControl({
         {(
           [
             { key: "gmail" as const, label: "Include only Gmail" },
-            { key: "yahoo" as const, label: "Include only Yahoo" },
             { key: "other" as const, label: "Include all other extensions" },
           ]
         ).map((opt) => (
