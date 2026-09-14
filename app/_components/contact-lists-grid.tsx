@@ -49,7 +49,9 @@ import {
   ArrowRight,
   BarChart3,
   Layers,
+  Loader2,
 } from "lucide-react";
+import { useContactListReadiness } from "@/app/_lib/hooks/use-contact-list-readiness";
 import type { Domain, Sender } from "@prisma/client";
 import Link from "next/link";
 
@@ -116,6 +118,7 @@ function ContactListCard({
   const count = getContactCount(list);
   const hasSenders = list.domain?.senders?.length > 0;
   const sendUrl = buildSendUrl(list);
+  const { isNotReady } = useContactListReadiness(list.id);
 
   if (viewMode === "list") {
     return (
@@ -129,8 +132,16 @@ function ContactListCard({
           {list.name.charAt(0).toUpperCase()}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-gray-900 truncate">
+          <p className="text-sm font-semibold text-gray-900 truncate flex items-center gap-1.5">
             {list.name}
+            {isNotReady && (
+              <span
+                title="Mailchimp audience still syncing — try again shortly"
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-medium shrink-0"
+              >
+                <Loader2 className="h-2.5 w-2.5 animate-spin" /> Syncing
+              </span>
+            )}
           </p>
           {list.description && (
             <p className="text-xs text-gray-500 truncate">{list.description}</p>
@@ -204,9 +215,21 @@ function ContactListCard({
             </div>
           </div>
           <Badge
-            className={`text-[10px] shrink-0 border ${hasSenders ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"}`}
+            className={`text-[10px] shrink-0 border ${
+              isNotReady
+                ? "bg-amber-50 text-amber-700 border-amber-200"
+                : hasSenders
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  : "bg-amber-50 text-amber-700 border-amber-200"
+            }`}
+            title={isNotReady ? "Mailchimp audience still syncing — try again shortly" : undefined}
           >
-            {hasSenders ? (
+            {isNotReady ? (
+              <>
+                <Loader2 className="h-2.5 w-2.5 mr-0.5 animate-spin" />
+                Syncing
+              </>
+            ) : hasSenders ? (
               <>
                 <CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />
                 Ready

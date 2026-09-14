@@ -5,6 +5,7 @@ import "./editor.css";
 import Loader from "./_components/loader";
 import { Toaster } from "./_components/ui/sonner";
 import { Suspense } from "react";
+import { QueryProvider } from "./_components/query-provider";
 
 export const metadata: Metadata = {
   title: "Email Manager",
@@ -24,9 +25,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${poppins.className}`}>
-        <Toaster />
-        <Loader />
-        <Suspense>{children}</Suspense>
+        <QueryProvider>
+          <Toaster />
+          <Loader />
+          <Suspense>{children}</Suspense>
+        </QueryProvider>
       </body>
     </html>
   );

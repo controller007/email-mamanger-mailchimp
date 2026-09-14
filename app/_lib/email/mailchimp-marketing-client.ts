@@ -193,24 +193,29 @@ export async function setCampaignContent(
 // a brand-new audience reported "recipients not ready" on /actions/send, but
 // querying its own /send-checklist a few minutes later — completely
 // untouched in between — showed is_ready: true with the Audience item now
-// "success". So the ~19s of backoff this used to do (3s/6s/10s, blindly
-// retrying /actions/send and pattern-matching the error text) wasn't nearly
-// long enough; the real lag on Mailchimp's side for a fresh audience's
-// recipient/segment index appears to be on the order of minutes, not
-// seconds. Polling the checklist (a cheap GET, and the authoritative
-// readiness signal) is both more accurate and faster than guessing at fixed
-// delays, since it returns the moment Mailchimp is actually ready instead of
-// always waiting out the full backoff.
+// "success". The real lag on Mailchimp's side for a fresh audience's
+// recipient/segment index turned out to be on the order of minutes, not
+// seconds — so blocking the request in a retry loop waiting it out (an
+// earlier version of this function did up to ~80s of polling) is the wrong
+// shape: it's slow, it can outlast a serverless function's timeout, and it
+// still isn't guaranteed to be long enough.
 //
-// Tradeoff: send-campaign.ts already runs this synchronously inside the
-// request (see that file's header comment re: removing Inngest) — if
-// wherever this is deployed has a serverless function timeout shorter than
-// SEND_READY_POLL_INTERVAL_MS * SEND_READY_POLL_ATTEMPTS, lower this budget
-// to fit, or move campaign sending off the request path entirely.
-const SEND_READY_POLL_INTERVAL_MS = 8000;
-const SEND_READY_POLL_ATTEMPTS = 10; // ~80s of polling budget
+// Instead: check once (cheap GET), and fail immediately and specifically if
+// not ready, rather than blocking. The contact-lists/send-email pages poll
+// GET /api/contact-lists/[id]/readiness client-side (via TanStack Query) so
+// the UI already knows an audience is ready *before* the user hits send —
+// this is only the last-line defensive check for whoever/whatever bypasses
+// that (e.g. a stale page, or a direct API call).
+export class AudienceNotReadyError extends Error {
+  constructor() {
+    super(
+      "This audience is still syncing on Mailchimp's side — try again in a minute.",
+    );
+    this.name = "AudienceNotReadyError";
+  }
+}
 
-async function isSendReady(campaignId: string): Promise<boolean> {
+export async function isCampaignSendReady(campaignId: string): Promise<boolean> {
   const checklist = await mcFetch<{ is_ready: boolean }>(
     `/campaigns/${campaignId}/send-checklist`,
   );
@@ -218,18 +223,9 @@ async function isSendReady(campaignId: string): Promise<boolean> {
 }
 
 export async function sendCampaign(campaignId: string): Promise<void> {
-  for (let attempt = 0; attempt <= SEND_READY_POLL_ATTEMPTS; attempt++) {
-    if (attempt > 0) {
-      await new Promise((r) => setTimeout(r, SEND_READY_POLL_INTERVAL_MS));
-    }
-    if (await isSendReady(campaignId)) {
-      await mcFetch(`/campaigns/${campaignId}/actions/send`, { method: "POST" });
-      return;
-    }
+  if (!(await isCampaignSendReady(campaignId))) {
+    throw new AudienceNotReadyError();
   }
-  // Ran out of polling budget — attempt anyway so a genuine (non-timing)
-  // error surfaces with Mailchimp's real message instead of a generic
-  // "gave up polling" one.
   await mcFetch(`/campaigns/${campaignId}/actions/send`, { method: "POST" });
 }
 

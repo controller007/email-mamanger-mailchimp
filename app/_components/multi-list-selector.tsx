@@ -24,7 +24,9 @@ import {
   ChevronRight,
   CheckCircle,
   Send,
+  Loader2,
 } from "lucide-react";
+import { useContactListReadiness } from "@/app/_lib/hooks/use-contact-list-readiness";
 
 interface ContactList {
   id: string;
@@ -244,7 +246,6 @@ export function MultiListSelector({
                       </p>
                     )}
                     {unselectedFiltered.map((list) => {
-                      const isEmpty = getCount(list) === 0;
                       const atMax =
                         selectedListIds.length >= 10 &&
                         !selectedListIds.includes(list.id);
@@ -254,8 +255,7 @@ export function MultiListSelector({
                           list={list}
                           isSelected={false}
                           onToggle={() => toggle(list.id)}
-                          disabled={atMax || isEmpty}
-                          disabledReason={isEmpty ? "No contacts" : undefined}
+                          disabled={atMax}
                         />
                       );
                     })}
@@ -304,27 +304,36 @@ function ListRow({
   isSelected,
   onToggle,
   disabled = false,
-  disabledReason,
 }: {
   list: ContactList;
   isSelected: boolean;
   onToggle: () => void;
   disabled?: boolean;
-  disabledReason?: string;
 }) {
   const count = getCount(list);
   const campaignCount = getCampaignCount(list);
+  const isEmpty = count === 0;
+  // Only worth polling readiness for lists that could plausibly be
+  // mid-sync — an empty list is already blocked for its own reason, and
+  // isSelected rows don't re-check (they're already committed to the send).
+  const { isNotReady } = useContactListReadiness(!isEmpty ? list.id : null);
+  const blocked = disabled || isEmpty || (isNotReady && !isSelected);
+  const disabledReason = isEmpty
+    ? "No contacts"
+    : isNotReady && !isSelected
+      ? "Mailchimp audience still syncing — try again shortly"
+      : undefined;
 
   return (
     <button
       type="button"
       onClick={onToggle}
-      disabled={disabled}
+      disabled={blocked}
       title={disabledReason}
       className={`w-full flex items-center gap-3.5 px-4 py-3 rounded-xl text-left transition-all ${
         isSelected
           ? "bg-blue-50 border border-blue-200"
-          : disabled
+          : blocked
             ? "opacity-40 cursor-not-allowed border border-transparent"
             : "border border-transparent hover:bg-gray-50 hover:border-gray-200"
       }`}
@@ -378,11 +387,19 @@ function ListRow({
         </p>
       </div>
 
-      {/* Campaign count badge */}
-      <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold shrink-0">
-        <Send className="h-3 w-3" />
-        {campaignCount.toLocaleString()}
-      </div>
+      {/* Syncing badge — shown instead of the campaign count while Mailchimp
+          catches up on a freshly-created audience */}
+      {isNotReady && !isSelected ? (
+        <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs font-semibold shrink-0">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Syncing
+        </div>
+      ) : (
+        <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold shrink-0">
+          <Send className="h-3 w-3" />
+          {campaignCount.toLocaleString()}
+        </div>
+      )}
 
       {isSelected && <CheckCircle className="h-4 w-4 text-blue-600 shrink-0" />}
     </button>
