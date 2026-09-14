@@ -7,6 +7,7 @@ import {
   addVerifiedDomain,
   verifyVerifiedDomain,
   deleteVerifiedDomain,
+  listVerifiedDomains,
 } from "@/app/_lib/email/mailchimp-marketing-client";
 import {
   addDomain as mandrillAddDomain,
@@ -93,7 +94,11 @@ export async function createDomain(domainName: string, email: string) {
         marketingStatus: "pending",
         transactionalStatus,
         mandrillVerifyTxtKey,
-        mailchimpDomainId: String(mcDomain.id),
+        // Mailchimp's add-domain response has no `id` field — it keys
+        // verified domains by the domain name itself (get/verify/delete all
+        // take the name, not an id). Stored here only as a "this domain was
+        // registered with Mailchimp Marketing" marker.
+        mailchimpDomainId: mcDomain.domain,
         userId: user.id,
       },
     });
@@ -357,11 +362,53 @@ export async function getAllDomains() {
   try {
     const user = await requireAuth();
 
-    const domains = await prisma.domain.findMany({
+    let domains = await prisma.domain.findMany({
       where: { userId: user.id },
       include: { senders: true },
       orderBy: { createdAt: "desc" },
     });
+
+    // Cross-check against Mailchimp Marketing's own verified-domains list —
+    // our marketingStatus is only as fresh as the last verifyDomain() call
+    // and can drift (e.g. the domain expired or was removed directly in
+    // Mailchimp's dashboard) without our DB ever finding out. One list call
+    // covers every domain, so reconcile on every page load rather than
+    // trust the cached value blindly.
+    let mcDomains: Awaited<ReturnType<typeof listVerifiedDomains>> = [];
+    let fetchOk = false;
+    try {
+      mcDomains = await listVerifiedDomains();
+      fetchOk = true;
+    } catch (error) {
+      console.error("[domains] Failed to fetch Mailchimp verified domains for sync:", error);
+    }
+    const mcByName = new Map(mcDomains.map((d) => [d.domain, d]));
+
+    let driftFound = false;
+    for (const domain of domains) {
+      // Never registered with Mailchimp Marketing, or this fetch failed —
+      // nothing to safely reconcile against.
+      if (!domain.mailchimpDomainId || !fetchOk) continue;
+
+      const mc = mcByName.get(domain.domain);
+      const liveMarketingStatus = mc?.verified ? "verified" : "pending";
+      if (liveMarketingStatus !== domain.marketingStatus) {
+        await prisma.domain.update({
+          where: { id: domain.id },
+          data: { marketingStatus: liveMarketingStatus },
+        });
+        await recomputeCombinedStatus(domain.id);
+        driftFound = true;
+      }
+    }
+
+    if (driftFound) {
+      domains = await prisma.domain.findMany({
+        where: { userId: user.id },
+        include: { senders: true },
+        orderBy: { createdAt: "desc" },
+      });
+    }
 
     return { success: true, domains };
   } catch (error) {

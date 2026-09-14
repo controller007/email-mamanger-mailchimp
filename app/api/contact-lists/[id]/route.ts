@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/app/_lib/auth/session";
 import prisma from "@/app/_lib/db/prisma";
 import { revalidatePath } from "next/cache";
+import { deleteAudience, deleteCampaign } from "@/app/_lib/email/mailchimp-marketing-client";
 
 export async function GET(
   request: NextRequest,
@@ -146,7 +147,9 @@ export async function DELETE(
     const existing = await prisma.contactList.findUnique({
       where: { id: params.id },
       include: {
-        emailHistory: { select: { id: true } },
+        emailHistory: {
+          select: { id: true, mailchimpCampaignId: true, sendMethod: true },
+        },
       },
     });
 
@@ -161,6 +164,37 @@ export async function DELETE(
     }
 
     const emailHistoryIds = existing.emailHistory.map((eh) => eh.id);
+
+    // Best-effort cleanup on Mailchimp's side — a failure here (e.g. a
+    // campaign was already sent and can't be deleted, or was already
+    // removed) shouldn't block removing the list from our own database.
+    const campaignIdsToDelete = existing.emailHistory
+      .filter((eh) => eh.sendMethod === "marketing" && eh.mailchimpCampaignId)
+      .map((eh) => eh.mailchimpCampaignId as string);
+
+    await Promise.allSettled(
+      campaignIdsToDelete.map((id) => deleteCampaign(id)),
+    ).then((results) => {
+      results.forEach((r, i) => {
+        if (r.status === "rejected") {
+          console.error(
+            `[contact-lists] Failed to delete Mailchimp campaign ${campaignIdsToDelete[i]}:`,
+            r.reason,
+          );
+        }
+      });
+    });
+
+    if (existing.mailchimpAudienceId) {
+      try {
+        await deleteAudience(existing.mailchimpAudienceId);
+      } catch (e) {
+        console.error(
+          `[contact-lists] Failed to delete Mailchimp audience ${existing.mailchimpAudienceId}:`,
+          e,
+        );
+      }
+    }
 
     await prisma.$transaction(async (tx) => {
       if (emailHistoryIds.length > 0) {

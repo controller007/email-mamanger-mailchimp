@@ -155,6 +155,15 @@ export async function createCampaign(
   });
 }
 
+// Used by send-campaign.ts to check whether a previously-created campaign
+// (from an earlier failed attempt) can be reused on retry, rather than
+// creating — and orphaning — a new one every time.
+export async function getCampaign(
+  campaignId: string,
+): Promise<{ id: string; status: string }> {
+  return mcFetch(`/campaigns/${campaignId}`);
+}
+
 export async function setCampaignContent(
   campaignId: string,
   html: string,
@@ -165,28 +174,48 @@ export async function setCampaignContent(
   });
 }
 
-const SEND_READY_RETRY_DELAYS_MS = [3000, 6000, 10000];
+// Confirmed by direct observation (2026-09-13): a campaign created against
+// a brand-new audience reported "recipients not ready" on /actions/send, but
+// querying its own /send-checklist a few minutes later — completely
+// untouched in between — showed is_ready: true with the Audience item now
+// "success". So the ~19s of backoff this used to do (3s/6s/10s, blindly
+// retrying /actions/send and pattern-matching the error text) wasn't nearly
+// long enough; the real lag on Mailchimp's side for a fresh audience's
+// recipient/segment index appears to be on the order of minutes, not
+// seconds. Polling the checklist (a cheap GET, and the authoritative
+// readiness signal) is both more accurate and faster than guessing at fixed
+// delays, since it returns the moment Mailchimp is actually ready instead of
+// always waiting out the full backoff.
+//
+// Tradeoff: send-campaign.ts already runs this synchronously inside the
+// request (see that file's header comment re: removing Inngest) — if
+// wherever this is deployed has a serverless function timeout shorter than
+// SEND_READY_POLL_INTERVAL_MS * SEND_READY_POLL_ATTEMPTS, lower this budget
+// to fit, or move campaign sending off the request path entirely.
+const SEND_READY_POLL_INTERVAL_MS = 8000;
+const SEND_READY_POLL_ATTEMPTS = 10; // ~80s of polling budget
 
-/**
- * Mailchimp's recipient/segment index for an audience can lag a few
- * seconds behind a just-completed member add — sending immediately after
- * can fail with "Your Campaign is not ready to send. recipients not
- * ready" (send-checklist reports it as "Your advanced segment is empty")
- * even though the member and recipient_count are already correct. This
- * is transient, so retry with backoff rather than failing the whole send.
- */
+async function isSendReady(campaignId: string): Promise<boolean> {
+  const checklist = await mcFetch<{ is_ready: boolean }>(
+    `/campaigns/${campaignId}/send-checklist`,
+  );
+  return checklist.is_ready;
+}
+
 export async function sendCampaign(campaignId: string): Promise<void> {
-  for (let attempt = 0; ; attempt++) {
-    try {
+  for (let attempt = 0; attempt <= SEND_READY_POLL_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, SEND_READY_POLL_INTERVAL_MS));
+    }
+    if (await isSendReady(campaignId)) {
       await mcFetch(`/campaigns/${campaignId}/actions/send`, { method: "POST" });
       return;
-    } catch (err) {
-      const notReady =
-        err instanceof Error && /not ready to send|recipients not ready/i.test(err.message);
-      if (!notReady || attempt >= SEND_READY_RETRY_DELAYS_MS.length) throw err;
-      await new Promise((r) => setTimeout(r, SEND_READY_RETRY_DELAYS_MS[attempt]));
     }
   }
+  // Ran out of polling budget — attempt anyway so a genuine (non-timing)
+  // error surfaces with Mailchimp's real message instead of a generic
+  // "gave up polling" one.
+  await mcFetch(`/campaigns/${campaignId}/actions/send`, { method: "POST" });
 }
 
 // ── Verified (sending) domains ───────────────────────────────────────────────
@@ -197,11 +226,24 @@ export async function sendCampaign(campaignId: string): Promise<void> {
 // verification code to an address on that domain; verifyVerifiedDomain
 // completes it by submitting that code back.
 
+// Matches Mailchimp's actual /verified-domains response shape — there is no
+// `id` field; domains are keyed by name (get/verify/delete all take the
+// domain string itself).
 export interface VerifiedDomain {
-  id: string;
   domain: string;
-  create_time: string;
   verified: boolean;
+  authenticated: boolean;
+  verification_email: string;
+  verification_sent: string;
+  status:
+    | "VERIFICATION_IN_PROGRESS"
+    | "VERIFIED"
+    | "EXPIRED"
+    | "ERROR"
+    | "AUTHENTICATION_IN_PROGRESS"
+    | "AUTHENTICATION_ERROR"
+    | "AUTHENTICATED";
+  is_free_email_provider: boolean;
 }
 
 /**

@@ -25,6 +25,24 @@ export function replaceVariables(
   });
 }
 
+// Mailchimp Marketing campaigns are ONE piece of content broadcast to the
+// whole audience — there's no per-recipient loop to run replaceVariables()
+// in like the transactional path has, so our own {first_name}-style tokens
+// have to become Mailchimp's *|FNAME|*-style merge tags instead, letting
+// Mailchimp fill in each recipient's actual value at send time. Anything we
+// can't map to a real synced merge field (see syncAudienceMembers) is
+// stripped to "" rather than left as raw {token} text in the sent email.
+const MAILCHIMP_MERGE_TAG_MAP: Record<string, string> = {
+  first_name: "*|FNAME|*",
+  last_name: "*|LNAME|*",
+  full_name: "*|FNAME|* *|LNAME|*",
+  email: "*|EMAIL|*",
+};
+
+export function replaceVariablesWithMergeTags(content: string): string {
+  return content.replace(/\{(\w+)\}/g, (_match, key) => MAILCHIMP_MERGE_TAG_MAP[key] ?? "");
+}
+
 export function isFullHtml(html: string): boolean {
   const trimmed = html.trimStart().toLowerCase();
   return trimmed.startsWith("<!doctype") || trimmed.startsWith("<html");

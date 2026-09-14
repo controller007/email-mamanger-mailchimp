@@ -23,11 +23,16 @@ import {
   createAudience,
   syncAudienceMembers,
   createCampaign,
+  getCampaign,
   setCampaignContent,
   sendCampaign,
   addListWebhook,
 } from "@/app/_lib/email/mailchimp-marketing-client";
-import { generateEmailTemplate, replaceVariables } from "@/app/_lib/email/html-template";
+import {
+  generateEmailTemplate,
+  replaceVariables,
+  replaceVariablesWithMergeTags,
+} from "@/app/_lib/email/html-template";
 import prisma from "@/app/_lib/db/prisma";
 
 const SEND_GAP_MS = 600;
@@ -73,7 +78,7 @@ async function sendWithRetry(
   return { data: null, error: lastError as Error };
 }
 
-async function loadContactsForList(contactListId: string, userId: string) {
+export async function loadContactsForList(contactListId: string, userId: string) {
   const suppressions = await prisma.emailSuppression.findMany({
     where: { userId },
     select: { email: true },
@@ -248,6 +253,62 @@ export async function sendTransactionalCampaign(
   return { sent, failed };
 }
 
+// A retry re-runs sendMarketingCampaign() against the same EmailHistory
+// record — without this, createCampaign() would fire again unconditionally
+// every time, leaving the previous attempt's campaign as a permanently
+// untracked orphan on Mailchimp the moment its id gets overwritten in our
+// DB. Reuse the campaign from the last attempt (still saved on the
+// EmailHistory row) as long as it's still a draft there; only create fresh
+// if there's no prior campaign, or the saved one turns out to be gone or
+// already sent (checked via a live GET, not assumed).
+async function getOrCreateCampaign(params: {
+  emailHistoryId: string;
+  audienceId: string;
+  subject: string;
+  fromName: string;
+  fromEmail: string;
+  replyTo: string;
+}): Promise<string> {
+  const { emailHistoryId, audienceId, subject, fromName, fromEmail, replyTo } = params;
+
+  const existing = await prisma.emailHistory.findUnique({
+    where: { id: emailHistoryId },
+    select: { mailchimpCampaignId: true },
+  });
+
+  if (existing?.mailchimpCampaignId) {
+    try {
+      const campaign = await getCampaign(existing.mailchimpCampaignId);
+      if (campaign.status === "save") {
+        return campaign.id;
+      }
+    } catch {
+      // Deleted on Mailchimp's side, or some other lookup failure — fall
+      // through and create a new one below.
+    }
+  }
+
+  const campaign = await createCampaign({
+    audienceId,
+    subject,
+    fromName,
+    fromEmail,
+    replyTo,
+    title: `Campaign ${emailHistoryId}`,
+  });
+
+  // Persist immediately — setCampaignContent/sendCampaign can still fail
+  // (e.g. Mailchimp's "recipients not ready"), and if that throws before
+  // this is saved, the campaign is left as an orphaned draft with nothing
+  // (including this same reuse check, next retry) able to find it again.
+  await prisma.emailHistory.update({
+    where: { id: emailHistoryId },
+    data: { mailchimpCampaignId: campaign.id },
+  });
+
+  return campaign.id;
+}
+
 // ── Marketing path: sync audience + create/send one Mailchimp campaign ──────
 
 export async function sendMarketingCampaign(
@@ -306,31 +367,37 @@ export async function sendMarketingCampaign(
 
   await syncAudienceMembers(audienceId, contacts);
 
+  // {first_name}-style tokens can't be resolved to one value here — this is
+  // a single piece of content going to the whole audience, not a per-contact
+  // loop — so they're converted to Mailchimp merge tags instead, which
+  // Mailchimp resolves per-recipient at send time.
+  const mergeSubject = replaceVariablesWithMergeTags(subject);
+
   const html = generateEmailTemplate({
-    body: emailBody,
-    subject,
+    body: replaceVariablesWithMergeTags(emailBody),
+    subject: mergeSubject,
     senderName,
-    preheader,
+    preheader: replaceVariablesWithMergeTags(preheader || ""),
     unsubscribeUrl: undefined, // Mailchimp injects its own unsubscribe footer/merge tag
   });
 
-  const campaign = await createCampaign({
+  const campaignId = await getOrCreateCampaign({
+    emailHistoryId,
     audienceId,
-    subject,
+    subject: mergeSubject,
     fromName: senderName,
     fromEmail: senderEmail,
     replyTo: senderEmail,
-    title: `Campaign ${emailHistoryId}`,
   });
-  await setCampaignContent(campaign.id, html);
-  await sendCampaign(campaign.id);
+
+  await setCampaignContent(campaignId, html);
+  await sendCampaign(campaignId);
 
   await prisma.emailHistory.update({
     where: { id: emailHistoryId },
     data: {
       status: "sent",
       sentCount: contacts.length,
-      mailchimpCampaignId: campaign.id,
     },
   });
 

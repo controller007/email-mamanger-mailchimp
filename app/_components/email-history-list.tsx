@@ -47,6 +47,7 @@ import {
   deleteEmailHistory,
   deleteManyEmailHistories,
   clearAllEmailHistories,
+  retryEmailHistory,
 } from "@/app/(dashboard)/email-history/actions";
 import { toast } from "sonner";
 
@@ -563,6 +564,7 @@ export function EmailHistoryList({
   const [isSelectAll, setIsSelectAll] = useState(false);
   const [openDetailId, setOpenDetailId] = useState<string | null>(null);
   const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set());
+  const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
 
   const handleSelectItem = (id: string, checked: boolean) => {
     const next = new Set(selectedItems);
@@ -631,6 +633,24 @@ export function EmailHistoryList({
       toast.error("Failed to sync campaign statistics.");
     } finally {
       setSyncingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const handleRetry = async (id: string) => {
+    setRetryingIds((prev) => new Set(prev).add(id));
+    try {
+      await retryEmailHistory(id);
+      toast.success("Campaign resent successfully!");
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Retry failed.");
+      router.refresh();
+    } finally {
+      setRetryingIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
@@ -728,6 +748,7 @@ export function EmailHistoryList({
 
           const isSelected = selectedItems.has(email.id);
           const isSyncingThis = syncingIds.has(email.id);
+          const isRetryingThis = retryingIds.has(email.id);
           const isInProgress =
             email.status === "queued" || email.status === "sending";
 
@@ -839,6 +860,23 @@ export function EmailHistoryList({
 
               {/* Actions */}
               <div className="flex items-center gap-1 shrink-0">
+                {email.status === "failed" && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRetry(email.id);
+                    }}
+                    disabled={isPending || isRetryingThis}
+                    className="p-1.5 rounded-lg text-gray-300 hover:text-emerald-600 hover:bg-emerald-50 transition-colors disabled:opacity-40"
+                    title="Retry send"
+                  >
+                    {isRetryingThis ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-600" />
+                    ) : (
+                      <Send className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                )}
                 <button
                   onClick={(e) => {
                     e.stopPropagation();

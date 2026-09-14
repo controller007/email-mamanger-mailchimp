@@ -5,6 +5,7 @@ import prisma from "@/app/_lib/db/prisma";
 import {
   sendTransactionalCampaign,
   sendMarketingCampaign,
+  loadContactsForList,
 } from "@/app/_lib/email/send-campaign";
 
 export async function POST(request: NextRequest) {
@@ -76,6 +77,27 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: "One or more contact lists not found" },
         { status: 404 },
+      );
+    }
+
+    // A list isn't "ready to send" just because it has rows — subscription
+    // status, bounces, complaints, and suppressions can all bring the
+    // actually-sendable count to zero even for a list that looks populated.
+    // Reject up front rather than silently marking a 0-recipient send
+    // "sent" (which send-campaign.ts's own contacts.length === 0 branch
+    // does, as a defensive fallback for paths that don't go through here,
+    // like a retry).
+    const notReadyLists: string[] = [];
+    for (const list of contactLists) {
+      const contacts = await loadContactsForList(list.id, session.user.id);
+      if (contacts.length === 0) notReadyLists.push(list.name);
+    }
+    if (notReadyLists.length > 0) {
+      return NextResponse.json(
+        {
+          error: `No sendable contacts in: ${notReadyLists.join(", ")}. Every contact is unsubscribed, bounced, complained, or suppressed.`,
+        },
+        { status: 400 },
       );
     }
 

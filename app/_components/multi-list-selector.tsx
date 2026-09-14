@@ -65,6 +65,11 @@ export function MultiListSelector({
       onChange(selectedListIds.filter((x) => x !== id));
     } else {
       if (selectedListIds.length >= 10) return;
+      // A list with zero contacts can't actually be sent to — the backend
+      // rejects it too (see /api/send-email's notReadyLists check), but
+      // blocking it here means a doomed send never even reaches submit.
+      const list = contactLists.find((l) => l.id === id);
+      if (list && getCount(list) === 0) return;
       onChange([...selectedListIds, id]);
     }
   };
@@ -239,6 +244,7 @@ export function MultiListSelector({
                       </p>
                     )}
                     {unselectedFiltered.map((list) => {
+                      const isEmpty = getCount(list) === 0;
                       const atMax =
                         selectedListIds.length >= 10 &&
                         !selectedListIds.includes(list.id);
@@ -248,7 +254,8 @@ export function MultiListSelector({
                           list={list}
                           isSelected={false}
                           onToggle={() => toggle(list.id)}
-                          disabled={atMax}
+                          disabled={atMax || isEmpty}
+                          disabledReason={isEmpty ? "No contacts" : undefined}
                         />
                       );
                     })}
@@ -297,11 +304,13 @@ function ListRow({
   isSelected,
   onToggle,
   disabled = false,
+  disabledReason,
 }: {
   list: ContactList;
   isSelected: boolean;
   onToggle: () => void;
   disabled?: boolean;
+  disabledReason?: string;
 }) {
   const count = getCount(list);
   const campaignCount = getCampaignCount(list);
@@ -311,6 +320,7 @@ function ListRow({
       type="button"
       onClick={onToggle}
       disabled={disabled}
+      title={disabledReason}
       className={`w-full flex items-center gap-3.5 px-4 py-3 rounded-xl text-left transition-all ${
         isSelected
           ? "bg-blue-50 border border-blue-200"
@@ -360,7 +370,11 @@ function ListRow({
           <Globe className="h-2.5 w-2.5" />
           {list.domain.domain}
           <span className="text-gray-300 mx-1">·</span>
-          {count.toLocaleString()} contacts
+          {count === 0 ? (
+            <span className="text-red-400 font-medium">No contacts</span>
+          ) : (
+            `${count.toLocaleString()} contacts`
+          )}
         </p>
       </div>
 
