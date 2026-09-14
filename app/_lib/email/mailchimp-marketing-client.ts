@@ -90,6 +90,21 @@ export async function deleteAudience(audienceId: string): Promise<void> {
 }
 
 /**
+ * Mailchimp refuses to delete an audience that still has any campaigns
+ * pointing at it (draft or sent) — "list_id" errors out. Queried live
+ * rather than relying only on our own DB's tracked campaign ids, since
+ * that misses campaigns created before campaign-id tracking existed, or
+ * anything created outside this app.
+ */
+export async function deleteAudienceWithCampaigns(audienceId: string): Promise<void> {
+  const { campaigns } = await mcFetch<{ campaigns: { id: string }[] }>(
+    `/campaigns?list_id=${audienceId}&count=1000`,
+  );
+  await Promise.allSettled(campaigns.map((c) => deleteCampaign(c.id)));
+  await deleteAudience(audienceId);
+}
+
+/**
  * Replaces the audience's membership with exactly `emails` via the batch
  * operations endpoint (upsert each member, subscribed).
  */

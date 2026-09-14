@@ -722,7 +722,9 @@ function DomainCard({ domain }: { domain: Domain }) {
                 <AlertDialogTitle>Delete domain?</AlertDialogTitle>
                 <AlertDialogDescription>
                   Permanently deletes <strong>{domain.domain}</strong> and all
-                  its senders and contact lists. Cannot be undone.
+                  its senders and contact lists — including their synced
+                  Mailchimp audiences <strong>and every campaign sent to them</strong>.
+                  Cannot be undone.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

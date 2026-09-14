@@ -61,7 +61,8 @@ export function DeleteContactListDialog({ children, contactList }: DeleteContact
           <AlertDialogTitle>Delete Contact List</AlertDialogTitle>
           <AlertDialogDescription>
             Are you sure you want to delete "{contactList.name}"? This action cannot be undone and will also delete all
-            associated email history.
+            associated email history — and if this list has ever been sent to via Mailchimp Marketing, its synced
+            audience <strong>and every campaign sent to it</strong> will be permanently deleted on Mailchimp too.
           </AlertDialogDescription>
         </AlertDialogHeader>
 

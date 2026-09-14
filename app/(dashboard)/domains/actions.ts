@@ -8,6 +8,7 @@ import {
   verifyVerifiedDomain,
   deleteVerifiedDomain,
   listVerifiedDomains,
+  deleteAudienceWithCampaigns,
 } from "@/app/_lib/email/mailchimp-marketing-client";
 import {
   addDomain as mandrillAddDomain,
@@ -440,6 +441,22 @@ export async function deleteDomain(domainId: string) {
     const emailHistoryIds = domain.contactLists.flatMap((list) =>
       list.emailHistory.map((eh) => eh.id),
     );
+
+    // Same reason as contact-lists/[id]'s DELETE: Mailchimp refuses to
+    // delete an audience that still has campaigns pointing at it, so every
+    // campaign has to go first. This domain's contact lists are about to be
+    // deleted below, taking their audiences with them.
+    await Promise.allSettled(
+      domain.contactLists
+        .filter((list) => list.mailchimpAudienceId)
+        .map((list) => deleteAudienceWithCampaigns(list.mailchimpAudienceId as string)),
+    ).then((results) => {
+      results.forEach((r) => {
+        if (r.status === "rejected") {
+          console.error("[domains] Failed to delete Mailchimp audience/campaigns:", r.reason);
+        }
+      });
+    });
 
     if (domain.mailchimpDomainId) {
       try {
